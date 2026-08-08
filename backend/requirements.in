@@ -1,0 +1,12 @@
+beautifulsoup4
+ddgs
+fastapi
+httpx
+pydantic-settings
+python-multipart
+sqlalchemy
+structlog
+tenacity
+trafilatura
+uvicorn[standard]
+
