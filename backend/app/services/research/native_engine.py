@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from collections import OrderedDict
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,6 +19,13 @@ from app.services.search.provider import SearchProvider
 from app.utils import normalize_url
 
 logger = logging.getLogger(__name__)
+
+RATE_LIMIT_MARKERS = ("ratelimit", "rate limit", "429", "too many requests", "202 ratelimit")
+
+
+def is_rate_limited(error: Exception) -> bool:
+    text = f"{type(error).__name__} {error}".lower()
+    return any(marker in text for marker in RATE_LIMIT_MARKERS)
 
 
 def heuristic_plan(topic: str) -> ResearchPlanData:
@@ -156,11 +166,29 @@ class NativeResearchEngine(ResearchEngine):
                 output.append((round_name, normalized))
         return output
 
+    async def _search_once(self, query: str) -> list[SearchResultData]:
+        """限流是搜索失败的主要原因；退避重试一次比整轮搜空便宜得多。"""
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                return await self.search_provider.search(
+                    query, limit=self.settings.search_results_per_query
+                )
+            except Exception as error:
+                last_error = error
+                if attempt >= 1 or not is_rate_limited(error):
+                    raise
+                await asyncio.sleep(3 + random.uniform(0, 2))
+        raise last_error or RuntimeError("搜索失败")
+
     async def search(
         self, topic: str, plan: ResearchPlanData, depth: int = 0
     ) -> tuple[list[SearchResultData], list[str]]:
         deduplicated: OrderedDict[str, SearchResultData] = OrderedDict()
         executed_queries: list[str] = []
+        attempted = 0
+        failed = 0
+        last_error = ""
         for round_name, query in self._queries(topic, plan, depth):
             existing = self.session.scalar(
                 select(SearchRun).where(
@@ -179,17 +207,19 @@ class NativeResearchEngine(ResearchEngine):
                     run.status = "RUNNING"
                     run.error = None
                 self.session.commit()
+                attempted += 1
+                pause = self.settings.search_query_pause_seconds
+                if pause > 0:
+                    await asyncio.sleep(pause * random.uniform(0.5, 1.5))
                 try:
-                    rows = await self.search_provider.search(
-                        query, limit=self.settings.search_results_per_query
-                    )
+                    rows = await self._search_once(query)
                     run.status = "SUCCESS"
                     run.results_json = [row.model_dump(mode="json") for row in rows]
-                    from datetime import UTC, datetime
-
                     run.completed_at = datetime.now(UTC)
                     self.session.commit()
                 except Exception as error:
+                    failed += 1
+                    last_error = str(error)[:200]
                     run.status = "FAILED"
                     run.error = str(error)[:2000]
                     self.session.commit()
@@ -209,4 +239,16 @@ class NativeResearchEngine(ResearchEngine):
                     break
             if len(deduplicated) >= self.settings.max_search_results:
                 break
+        # 不在这里报错的话，后面会以 "没有成功抓取到任何有效正文" 的名义失败在 fetch 步，
+        # 指向错误的原因。
+        if attempted and (attempted - failed) / attempted < self.settings.search_min_success_ratio:
+            raise RuntimeError(
+                f"搜索几乎全部失败（{attempted - failed}/{attempted} 成功，"
+                f"provider={self.search_provider.name}）：{last_error or '未知错误'}"
+            )
+        if not deduplicated:
+            raise RuntimeError(
+                f"搜索没有返回任何结果（provider={self.search_provider.name}）："
+                f"{last_error or '请检查网络或更换 SEARCH_PROVIDER'}"
+            )
         return list(deduplicated.values()), executed_queries

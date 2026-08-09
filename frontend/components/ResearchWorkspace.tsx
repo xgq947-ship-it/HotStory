@@ -1,13 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
-import { ApiError, api, scriptDownloadUrl } from "@/lib/api";
+import { ApiError, api, apiConditional, scriptDownloadUrl } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import type {
   Event,
   Fact,
+  ProductionPackage,
   ScriptPayload,
   Source,
   StatusPayload,
@@ -16,6 +18,7 @@ import type {
 } from "@/lib/types";
 
 import { Brand } from "./Brand";
+import { ProductionWorkspace } from "./ProductionWorkspace";
 import { StatusPill } from "./StatusPill";
 
 const stepLabels: Record<string, string> = {
@@ -30,10 +33,11 @@ const stepLabels: Record<string, string> = {
   value: "价值方向",
   write: "编写剧本",
   review: "质量审校",
+  production: "影视生成包",
   export: "保存档案",
 };
 
-const tabs = ["概览", "时间线", "案例", "数据", "来源", "剧本"] as const;
+const tabs = ["概览", "时间线", "案例", "数据", "来源", "剧本", "影视生成"] as const;
 type Tab = (typeof tabs)[number];
 
 function confidenceLabel(value: number) {
@@ -47,6 +51,29 @@ function formatDate(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.valueOf())) return value;
   return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "short", day: "numeric" }).format(parsed);
+}
+
+const POLL_INTERVAL_MS = 2500;
+
+/**
+ * 每个 artifact 的"变没变"信号。以前每 2.5 秒把 7 个接口全量拉一遍
+ * （实测 419 秒里 1188 次请求、每轮约 390KB），现在只在信号变化时拉。
+ * DB 派生的 sources/facts/events 没有版本号，用相关步骤的状态当信号。
+ */
+function artifactKeys(status: StatusPayload | null): Record<string, string> {
+  if (!status) return {};
+  const stepStatus = (name: string) =>
+    status.steps.find((step) => step.step === name)?.status ?? "PENDING";
+  const version = (kind: string) => String(status.artifact_versions?.[kind] ?? 0);
+  return {
+    sources: [stepStatus("search"), stepStatus("fetch"), stepStatus("verify")].join("/"),
+    facts: [stepStatus("extract"), stepStatus("verify")].join("/"),
+    events: [stepStatus("cluster"), stepStatus("verify")].join("/"),
+    timeline: version("timeline"),
+    story: version("story_arc"),
+    script: version("script") + "/" + version("review"),
+    production: version("production_package"),
+  };
 }
 
 function Metric({ label, value, target }: { label: string; value: number; target?: number }) {
@@ -73,49 +100,109 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
   const [timeline, setTimeline] = useState<TimelinePayload | null>(null);
   const [story, setStory] = useState<StoryPayload | null>(null);
   const [script, setScript] = useState<ScriptPayload | null>(null);
+  const [production, setProduction] = useState<ProductionPackage | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("概览");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refreshArtifacts = useCallback(async () => {
-    const results = await Promise.allSettled([
-      api<Source[]>(`/topics/${topicId}/sources`),
-      api<Fact[]>(`/topics/${topicId}/facts`),
-      api<Event[]>(`/topics/${topicId}/events`),
-      api<TimelinePayload>(`/topics/${topicId}/timeline`),
-      api<StoryPayload>(`/topics/${topicId}/story`),
-      api<ScriptPayload>(`/topics/${topicId}/script`),
-    ]);
-    if (results[0].status === "fulfilled") setSources(results[0].value);
-    if (results[1].status === "fulfilled") setFacts(results[1].value);
-    if (results[2].status === "fulfilled") setEvents(results[2].value);
-    if (results[3].status === "fulfilled") setTimeline(results[3].value);
-    if (results[4].status === "fulfilled") setStory(results[4].value);
-    if (results[5].status === "fulfilled") setScript(results[5].value);
-  }, [topicId]);
+  const fetchedKeys = useRef<Record<string, string>>({});
+  const etags = useRef<Record<string, string | null>>({});
+  const inFlight = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
+    // 上一轮还没回来就跳过这一轮，否则后端一慢请求就无限叠加。
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
       const nextStatus = await api<StatusPayload>(`/topics/${topicId}/status`);
       setStatus(nextStatus);
       setError(null);
-      await refreshArtifacts();
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : "无法连接本地 HotStory 服务。 ");
+    } finally {
+      inFlight.current = false;
     }
-  }, [refreshArtifacts, topicId]);
+  }, [topicId]);
+
+  const forceRefresh = useCallback(async () => {
+    fetchedKeys.current = {};
+    etags.current = {};
+    await refresh();
+  }, [refresh]);
 
   useEffect(() => {
+    fetchedKeys.current = {};
+    etags.current = {};
     void refresh();
   }, [refresh]);
 
   useEffect(() => {
     const terminal = status?.topic.status === "COMPLETED" || status?.topic.status === "FAILED";
     if (terminal) return;
-    const timer = window.setInterval(() => void refresh(), 2500);
+    const timer = window.setInterval(() => void refresh(), POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [refresh, status?.topic.status]);
+
+  // artifact 只在信号变化时拉一次。abort 只在卸载/换主题时触发——
+  // 如果每次 status 更新都 abort，慢接口（sources 是最大的一个）会永远拉不完。
+  useEffect(() => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    return () => {
+      controller.abort();
+      abortRef.current = null;
+    };
+  }, [topicId]);
+
+  useEffect(() => {
+    if (!status) return;
+    const keys = artifactKeys(status);
+
+    async function load<T>(
+      name: string,
+      path: string,
+      apply: (value: T) => void,
+      conditional = false,
+    ) {
+      if (keys[name] === fetchedKeys.current[name]) return;
+      // 先占位，避免下一轮 status 更新时重复发同一个请求。
+      fetchedKeys.current[name] = keys[name];
+      try {
+        if (conditional) {
+          const result = await apiConditional<T>(path, etags.current[name] ?? null, {
+            signal: abortRef.current?.signal,
+          });
+          etags.current[name] = result.etag;
+          if (result.data !== null) apply(result.data);
+        } else {
+          apply(await api<T>(path, { signal: abortRef.current?.signal }));
+        }
+      } catch (cause) {
+        // 404 说明这个 artifact 还没生成——对当前信号来说这就是正确答案，
+        // 保留占位，等信号变化再试。撤掉占位会让未生成的 artifact 每轮都重发一次。
+        if (!(cause instanceof ApiError && cause.status === 404)) {
+          delete fetchedKeys.current[name];
+        }
+      }
+    }
+
+    void Promise.all([
+      load<Source[]>("sources", `/topics/${topicId}/sources`, setSources),
+      load<Fact[]>("facts", `/topics/${topicId}/facts`, setFacts),
+      load<Event[]>("events", `/topics/${topicId}/events`, setEvents),
+      load<TimelinePayload>("timeline", `/topics/${topicId}/timeline`, setTimeline, true),
+      load<StoryPayload>("story", `/topics/${topicId}/story`, setStory, true),
+      load<ScriptPayload>("script", `/topics/${topicId}/script`, setScript, true),
+      load<ProductionPackage>(
+        "production",
+        `/topics/${topicId}/production-package`,
+        setProduction,
+        true,
+      ),
+    ]);
+  }, [status, topicId]);
 
   const sourceMap = useMemo(
     () => new Map(sources.map((source) => [source.id, source])),
@@ -133,7 +220,7 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
         method: "POST",
         body: JSON.stringify({ duration: status?.topic.requested_duration ?? 90 }),
       });
-      await refresh();
+      await forceRefresh();
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : "启动失败");
     } finally {
@@ -146,7 +233,7 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
     setError(null);
     try {
       await api(`/topics/${topicId}/continue`, { method: "POST", body: "{}" });
-      await refresh();
+      await forceRefresh();
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : "继续研究失败");
     } finally {
@@ -163,7 +250,7 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
         body: JSON.stringify({ duration }),
       });
       setActiveTab("概览");
-      await refresh();
+      await forceRefresh();
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : "重新生成失败");
     } finally {
@@ -173,9 +260,52 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
 
   async function copyScript() {
     if (!script?.script) return;
-    await navigator.clipboard.writeText(script.script);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    try {
+      await copyTextToClipboard(script.script);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "复制失败");
+    }
+  }
+
+  async function generateProduction() {
+    setBusy(true);
+    setError(null);
+    setActiveTab("影视生成");
+    try {
+      await api(`/topics/${topicId}/production-package`, {
+        method: "POST",
+        body: "{}",
+      });
+      await forceRefresh();
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : "影视生成包启动失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function regenerateProductionShot(
+    shotId: string,
+    currentPrompt: string,
+  ): Promise<ProductionPackage> {
+    setError(null);
+    try {
+      const next = await api<ProductionPackage>(
+        `/topics/${topicId}/production-package/shots/${shotId}/regenerate`,
+        {
+          method: "POST",
+          body: JSON.stringify({ current_prompt: currentPrompt }),
+        },
+      );
+      setProduction(next);
+      return next;
+    } catch (cause) {
+      const message = cause instanceof ApiError ? cause.message : "当前镜头重新优化失败";
+      setError(message);
+      throw new Error(message);
+    }
   }
 
   if (!status) {
@@ -327,6 +457,17 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
                     copied={copied}
                     onCopy={() => void copyScript()}
                     onRewrite={(duration) => void rewrite(duration)}
+                  />
+                ) : null}
+                {activeTab === "影视生成" ? (
+                  <ProductionWorkspace
+                    topicId={topicId}
+                    payload={production}
+                    scriptReady={Boolean(script?.script)}
+                    busy={busy}
+                    isRunning={isRunning}
+                    onGenerate={generateProduction}
+                    onRegenerateShot={regenerateProductionShot}
                   />
                 ) : null}
               </div>
@@ -655,4 +796,3 @@ function Empty({ message }: { message: string }) {
     </div>
   );
 }
-

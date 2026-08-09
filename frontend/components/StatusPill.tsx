@@ -13,6 +13,7 @@ const labels: Record<TopicStatus, string> = {
   VALUE: "提炼价值",
   WRITING: "编写剧本",
   REVIEWING: "质量审校",
+  DIRECTING: "生成影视包",
   COMPLETED: "已完成",
   FAILED: "需要处理",
 };
@@ -33,4 +34,3 @@ export function StatusPill({ status }: { status: TopicStatus }) {
     </span>
   );
 }
-

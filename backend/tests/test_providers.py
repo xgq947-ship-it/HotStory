@@ -27,7 +27,7 @@ def test_personal_case_excerpt_keeps_neighboring_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_deepseek_provider_uses_json_mode(tmp_path) -> None:
+async def test_deepseek_provider_uses_global_max_json_mode(tmp_path) -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -57,6 +57,45 @@ async def test_deepseek_provider_uses_json_mode(tmp_path) -> None:
     assert response.content == '{"ok": true}'
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["model"] == "deepseek-v4-flash"
+    assert captured["thinking"] == {"type": "enabled"}
+    assert captured["reasoning_effort"] == "max"
+    assert captured["max_tokens"] == 65536
+    assert "temperature" not in captured
+
+
+@pytest.mark.asyncio
+async def test_deepseek_provider_can_disable_reasoning(tmp_path) -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(__import__("json").loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"ok": true}'}}],
+                "model": "deepseek-v4-flash",
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        llm_provider="deepseek",
+        llm_model="deepseek-v4-flash",
+        llm_base_url="https://api.deepseek.com",
+        deepseek_api_key="test-key",
+        deepseek_thinking_enabled=False,
+        llm_max_output_tokens=32768,
+    )
+    provider = DeepSeekProvider(settings, client=client)
+    await provider.generate_json("system", "output json")
+    await client.aclose()
+
+    assert captured["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in captured
+    assert captured["max_tokens"] == 32768
+    assert captured["temperature"] == 0.1
 
 
 @pytest.mark.asyncio

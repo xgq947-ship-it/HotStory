@@ -30,6 +30,7 @@ class AnthropicProvider(LLMProvider):
         try:
             response = await client.post(
                 f"{self.base_url}/messages",
+                timeout=httpx.Timeout(self.settings.llm_timeout_seconds, connect=10.0),
                 headers={
                     "x-api-key": self.api_key,
                     "anthropic-version": "2023-06-01",

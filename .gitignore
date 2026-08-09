@@ -18,7 +18,10 @@ output/playwright/
 coverage/
 htmlcov/
 *.log
+# 启动器按大小滚动出来的 hotstory-app.log.1 等
+*.log.*
 data/hotstory.db
 data/hotstory.db-*
+data/.node-arch
 data/projects/*
 !data/projects/.gitkeep

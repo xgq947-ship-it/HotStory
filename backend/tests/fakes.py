@@ -69,6 +69,95 @@ class ScenarioLLMProvider(LLMProvider):
         )
 
     async def generate_json(self, system_prompt: str, user_prompt: str) -> LLMResponse:
+        if '"prompt_body_template"' in user_prompt:
+            shot_ids = list(dict.fromkeys(re.findall(r"shot_\d+", user_prompt)))[:4]
+            return self._response(
+                {
+                    "shots": [
+                        {
+                            "shot_id": shot_id,
+                            "prompt_body_template": (
+                                "场景上下文\n当前已核验事件的纪实还原空间。\n\n"
+                                "首帧与空间调度\n主体从第一帧就在中景清晰可见，身体朝向动作目标，"
+                                "视线先于头部移动，手中事务在信息落下时短暂停住。\n\n"
+                                "光学与摄影机\n47°自然标准视野，摄影机距主体四米，"
+                                "只做一次缓慢微推进并持续跟随主要动作。\n\n"
+                                "物理与灯光\n脚掌真实落地，衣料带轻微惯性延迟，"
+                                "单侧现场实用光形成自然阴影，优先保持面部与环境层次。"
+                            ),
+                            "ambient_audio": "与当前空间一致的低声环境底噪",
+                        }
+                        for shot_id in shot_ids
+                    ]
+                }
+            )
+        if "目标镜头数：" in user_prompt:
+            count = int(re.search(r"目标镜头数：(\d+)", user_prompt).group(1))  # type: ignore[union-attr]
+            duration = int(re.search(r"目标总时长：(\d+)", user_prompt).group(1))  # type: ignore[union-attr]
+            character_ids = list(dict.fromkeys(re.findall(r"char_\d+", user_prompt)))
+            event_ids = list(
+                dict.fromkeys(re.findall(r"event_[a-f0-9]{16}", user_prompt))
+            )
+            source_ids = list(
+                dict.fromkeys(re.findall(r"source_[a-f0-9]{16}", user_prompt))
+            )
+            return self._response(
+                {
+                    "shots": [
+                        {
+                            "shot_id": f"shot_{index + 1:02d}",
+                            "title": f"纪实镜头 {index + 1}",
+                            "start_second": (index * duration) // count,
+                            "end_second": ((index + 1) * duration) // count,
+                            "narration": "",
+                            "dialogue": "",
+                            "visual_brief": "以已核验资料和克制人物反应呈现当前叙事节点",
+                            "active_character_ids": character_ids[:1],
+                            "event_ids": event_ids[:1],
+                            "source_ids": source_ids[:1],
+                        }
+                        for index in range(count)
+                    ]
+                }
+            )
+        if "角色资产阶段" in user_prompt:
+            fact_ids = list(dict.fromkeys(re.findall(r"fact_[a-f0-9]{16}", user_prompt)))
+            return self._response(
+                {
+                    "style_bible": (
+                        "真实社会纪实电影质感，自然生活化表演，克制低对比方向光，"
+                        "中性色环境、深灰结构和少量现场暖色保持全片一致。"
+                    ),
+                    "characters": [
+                        {
+                            "prompt_label": "成年纪实还原当事人",
+                            "role": "lead",
+                            "story_function": "承载已核验个人案例的主要观察视角",
+                            "source_fact_ids": fact_ids[:1],
+                            "visual_anchor": (
+                                "成年东亚纪实还原演员，普通真实体型，"
+                                "自然生活痕迹与稳定面部比例"
+                            ),
+                            "wardrobe_anchor": (
+                                "无品牌深灰日常外套与浅色内搭，"
+                                "布料磨损状态跨镜头一致"
+                            ),
+                            "image_prompt": (
+                                "三张同一位成年纪实还原演员的真实棚拍照片并排组成电影选角页。"
+                                "左侧全身正面，中间完整背面，右侧头肩近景；同一张脸、体型和服装。"
+                                "中性灰背景，单侧柔和方向光，真实皮肤和布料纹理，克制纪录片质感。"
+                            ),
+                            "acting_profile": (
+                                "成年纪实还原当事人以略低重心和收紧肩背承载压力，目标是让自己的选择被认真听见。"
+                                "开口前短暂停住手中事务，压力升高时拇指摩擦指节；礼貌神情在核心代价被提及时短暂松动。"
+                                "眼神在对方、出口和手中物件之间微扫，保持真实眨眼并让视线先于头部到达目标。"
+                            ),
+                            "voice_prompt": "中低音自然声线，语速克制，压力上升时句尾略微收紧。",
+                            "default_use_reference": True,
+                        }
+                    ],
+                }
+            )
         if "research_questions" in user_prompt:
             return self._response(
                 {

@@ -70,8 +70,21 @@ async def test_pipeline_completes_and_resumes_without_duplicate_calls(
         "value.json",
         "review.json",
         "script.md",
+        "production_package.json",
     }
     assert expected.issubset({path.name for path in project_dir.iterdir()})
+    with session_factory() as session:
+        package = pipeline.store.load_json(session, topic_id, "production_package")
+    assert package["max_shot_duration_seconds"] == 10
+    assert package["prompt_preservation"] == "lossless"
+    assert len(package["shots"]) == 9
+    assert all(1 <= shot["duration_seconds"] <= 10 for shot in package["shots"])
+    assert [stage["skill"] for stage in package["skills"]] == [
+        "lira-image-prompts",
+        "acting-ai-video",
+        "cinedance-higgsfield",
+    ]
+    assert all(stage["instruction_mode"] == "verbatim" for stage in package["skills"])
     first_counts = (llm.calls, search.calls, crawler.calls)
 
     await pipeline.run(topic_id)

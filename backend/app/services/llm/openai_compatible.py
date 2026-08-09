@@ -22,6 +22,7 @@ class OpenAICompatibleProvider(LLMProvider):
         base_url: str | None = None,
         api_key: str | None = None,
         model: str | None = None,
+        thinking_enabled: bool | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.settings = settings
@@ -29,6 +30,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
         self.api_key = api_key if api_key is not None else settings.secret_for_llm()
         self.model = model or settings.llm_model
+        self.thinking_enabled = thinking_enabled
         self._client = client
 
     @property
@@ -45,15 +47,23 @@ class OpenAICompatibleProvider(LLMProvider):
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.1 if json_mode else 0.45,
-            "max_tokens": 8192,
+            "max_tokens": self.settings.llm_max_output_tokens,
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if self.thinking_enabled is not None:
+            payload["thinking"] = {
+                "type": "enabled" if self.thinking_enabled else "disabled"
+            }
+            if self.thinking_enabled:
+                payload.pop("temperature", None)
+                payload["reasoning_effort"] = self.settings.deepseek_reasoning_effort
 
         own_client = self._client is None
         client = self._client or httpx.AsyncClient(
             timeout=httpx.Timeout(self.settings.llm_timeout_seconds), follow_redirects=True
         )
+        timeout = httpx.Timeout(self.settings.llm_timeout_seconds, connect=10.0)
         try:
             last_error: Exception | None = None
             for attempt in range(self.settings.llm_max_retries + 1):
@@ -65,6 +75,7 @@ class OpenAICompatibleProvider(LLMProvider):
                             "Content-Type": "application/json",
                         },
                         json=payload,
+                        timeout=timeout,
                     )
                     if response.status_code == 429 or response.status_code >= 500:
                         raise RetriableLLMError(
@@ -72,9 +83,16 @@ class OpenAICompatibleProvider(LLMProvider):
                         )
                     response.raise_for_status()
                     data = response.json()
-                    content = data["choices"][0]["message"]["content"]
+                    choice = data["choices"][0]
+                    message = choice["message"]
+                    content = message.get("content")
                     if not isinstance(content, str) or not content.strip():
-                        raise RetriableLLMError(f"{self.name} 返回空内容")
+                        finish_reason = choice.get("finish_reason", "unknown")
+                        reasoning_chars = len(message.get("reasoning_content") or "")
+                        raise RetriableLLMError(
+                            f"{self.name} 返回空内容"
+                            f"（finish_reason={finish_reason}, reasoning_chars={reasoning_chars}）"
+                        )
                     return LLMResponse(
                         content=content.strip(), provider=self.name, model=self.model, raw=data
                     )
@@ -103,5 +121,6 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             base_url=settings.llm_base_url or "https://api.deepseek.com",
             api_key=settings.secret_for_llm(),
             model=settings.llm_model or "deepseek-v4-flash",
+            thinking_enabled=settings.deepseek_thinking_enabled,
             client=client,
         )

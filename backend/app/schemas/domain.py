@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class FactType(StrEnum):
@@ -142,6 +142,109 @@ class ReviewData(BaseModel):
     passed: bool
 
 
+class CharacterImageSettings(BaseModel):
+    model: str = "Higgsfield Soul 2.0"
+    aspect_ratio: str = "16:9"
+    quality: str = "2k"
+    consistency: str = "首张满意后创建 Soul ID，并在后续镜头中复用"
+
+
+class CharacterAssetDraft(BaseModel):
+    prompt_label: str = Field(min_length=2, max_length=80)
+    role: Literal["lead", "supporting"]
+    story_function: str = Field(min_length=2, max_length=300)
+    source_fact_ids: list[str] = Field(default_factory=list)
+    visual_anchor: str = Field(min_length=10)
+    wardrobe_anchor: str = Field(min_length=5)
+    image_prompt: str = Field(min_length=30)
+    acting_profile: str = Field(min_length=30)
+    voice_prompt: str = ""
+    default_use_reference: bool = True
+
+
+class CharacterCatalogDraft(BaseModel):
+    style_bible: str = Field(min_length=10)
+    characters: list[CharacterAssetDraft] = Field(default_factory=list, max_length=6)
+
+
+class CharacterAssetData(CharacterAssetDraft):
+    id: str
+    reference_token: str
+    identity_basis: Literal["verified_role_visualization"] = "verified_role_visualization"
+    disclosure: str = "影视化还原角色，不代表真实人物的实际外貌。"
+    image_settings: CharacterImageSettings = Field(default_factory=CharacterImageSettings)
+    optimized_by: str = "lira-image-prompts + acting-ai-video"
+
+
+class ShotPlanDraft(BaseModel):
+    shot_id: str = Field(min_length=3, max_length=40)
+    title: str = Field(min_length=2, max_length=120)
+    start_second: int = Field(ge=0, le=180)
+    end_second: int = Field(ge=1, le=180)
+    narration: str = Field(default="", max_length=1200)
+    dialogue: str = Field(default="", max_length=800)
+    visual_brief: str = Field(min_length=5, max_length=1500)
+    active_character_ids: list[str] = Field(default_factory=list)
+    event_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_shot_window(self) -> ShotPlanDraft:
+        duration = self.end_second - self.start_second
+        if duration < 1:
+            raise ValueError("镜头结束时间必须晚于开始时间")
+        if duration > 10:
+            raise ValueError("单个镜头不得超过 10 秒")
+        return self
+
+
+class ShotPlanResult(BaseModel):
+    shots: list[ShotPlanDraft] = Field(min_length=1, max_length=18)
+
+
+class ShotPromptDraft(BaseModel):
+    shot_id: str
+    prompt_body_template: str = Field(min_length=80)
+    ambient_audio: str = ""
+
+
+class ShotPromptBatch(BaseModel):
+    shots: list[ShotPromptDraft] = Field(default_factory=list, max_length=4)
+
+
+class CinematicShotData(ShotPlanDraft):
+    duration_seconds: int = Field(ge=1, le=10)
+    prompt_body_template: str
+    ambient_audio: str = ""
+    target_model: str = "Seedance 2.0 / Higgsfield Seedance"
+    optimized_by: str = "acting-ai-video + cinedance-higgsfield"
+    revision: int = Field(default=1, ge=1)
+
+
+class SkillStageData(BaseModel):
+    order: int
+    skill: str
+    purpose: str
+    instruction_mode: Literal["verbatim"] = "verbatim"
+    source_sha256: str = ""
+
+
+class ProductionPackageData(BaseModel):
+    version: str = "1.2"
+    topic_id: str
+    generated_at: str
+    duration_seconds: int
+    llm_profile: str = ""
+    max_shot_duration_seconds: Literal[10] = 10
+    generation_mode: Literal["ai_optimized", "mixed", "fallback"] = "ai_optimized"
+    warnings: list[str] = Field(default_factory=list)
+    prompt_preservation: Literal["lossless"] = "lossless"
+    style_bible: str
+    skills: list[SkillStageData]
+    characters: list[CharacterAssetData] = Field(default_factory=list)
+    shots: list[CinematicShotData] = Field(default_factory=list)
+
+
 class HotspotData(BaseModel):
     title: str
     platform: str
@@ -193,10 +296,17 @@ class TopicStatusResponse(BaseModel):
     counts: dict[str, int]
     material_ready: bool
     minimums: dict[str, int]
+    # kind -> version。前端靠它决定要不要重新拉 artifact，而不是每 2.5 秒全量拉一遍。
+    # regenerate_shot 只改 artifact 不动 StepRun，只看步骤状态会漏掉它。
+    artifact_versions: dict[str, int] = Field(default_factory=dict)
 
 
 class RewriteScriptRequest(BaseModel):
     duration: Literal[60, 90, 180] = 90
+
+
+class RegenerateShotRequest(BaseModel):
+    current_prompt: str = ""
 
 
 class AcceptedResponse(BaseModel):
@@ -208,10 +318,15 @@ class AcceptedResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     llm_provider: str
+    llm_model: str
+    llm_profile: str
     llm_ready: bool
     search_provider: str
     crawler_provider: str
     version: str
+    # 只有 ?probe=true 时才会真的调一次 LLM；平时保持 None，避免启动/健康检查变慢变脆。
+    llm_probe_ok: bool | None = None
+    llm_probe_error: str | None = None
 
 
 JsonValue = dict[str, Any] | list[Any]

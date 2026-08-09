@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from bs4 import BeautifulSoup
 
 from app.config import Settings
@@ -44,7 +46,9 @@ class Crawl4AICrawler(CrawlerProvider):
         else:
             markdown = str(markdown_value or "")
         cleaned_html = getattr(result, "cleaned_html", "") or ""
-        raw_text = BeautifulSoup(cleaned_html, "html.parser").get_text("\n", strip=True)
+        raw_text = await asyncio.to_thread(
+            lambda: BeautifulSoup(cleaned_html, "html.parser").get_text("\n", strip=True)
+        )
         metadata = getattr(result, "metadata", {}) or {}
         return CrawledDocumentData(
             url=url,

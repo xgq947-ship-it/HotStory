@@ -27,6 +27,8 @@ def test_settings(tmp_path) -> Settings:
         min_personal_cases=1,
         min_key_data=2,
         max_retries=0,
+        search_query_pause_seconds=0,
+        llm_raw_retention=0,
     )
 
 

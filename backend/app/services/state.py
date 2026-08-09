@@ -19,6 +19,7 @@ PIPELINE_STEPS = [
     "value",
     "write",
     "review",
+    "production",
     "export",
 ]
 
@@ -35,7 +36,8 @@ TOPIC_STATUS_BY_STEP = {
     "value": "VALUE",
     "write": "WRITING",
     "review": "REVIEWING",
-    "export": "REVIEWING",
+    "production": "DIRECTING",
+    "export": "DIRECTING",
 }
 
 

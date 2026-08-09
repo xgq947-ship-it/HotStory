@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import TypeVar
@@ -42,6 +43,7 @@ class LLMService:
     def __init__(self, provider: LLMProvider, store: ProjectStore | None = None) -> None:
         self.provider = provider
         self.store = store or ProjectStore()
+        self._record_lock = asyncio.Lock()
 
     def _record(
         self,
@@ -52,7 +54,7 @@ class LLMService:
         response: LLMResponse | None,
         parsed: dict | list | None = None,
         error: str | None = None,
-    ) -> None:
+    ) -> tuple[str, dict]:
         call_id = new_id("llm")
         raw_content = response.content if response else ""
         call = LLMCall(
@@ -69,20 +71,46 @@ class LLMService:
         )
         session.add(call)
         session.flush()
-        self.store.save_json_file(
-            topic_id,
-            f"llm_raw/{call_id}",
-            {
-                "id": call_id,
-                "step": step,
-                "provider": call.provider,
-                "model": call.model,
-                "prompt_hash": call.prompt_hash,
-                "raw_response": raw_content,
-                "parsed": parsed,
-                "error": error,
-            },
-        )
+        return call_id, {
+            "id": call_id,
+            "step": step,
+            "provider": call.provider,
+            "model": call.model,
+            "prompt_hash": call.prompt_hash,
+            "raw_response": raw_content,
+            "parsed": parsed,
+            "error": error,
+        }
+
+    async def _record_and_commit(
+        self,
+        session: Session,
+        topic_id: str,
+        step: str,
+        prompt: str,
+        response: LLMResponse | None,
+        parsed: dict | list | None = None,
+        error: str | None = None,
+    ) -> None:
+        # Provider calls may run concurrently, but one SQLAlchemy Session must
+        # never be flushed by two asyncio tasks at the same time.
+        async with self._record_lock:
+            try:
+                call_id, payload = self._record(
+                    session,
+                    topic_id,
+                    step,
+                    prompt,
+                    response,
+                    parsed=parsed,
+                    error=error,
+                )
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+        # 落盘（json.dumps + fsync）在锁外、线程里做，不占事件循环。
+        await self.store.save_json_file_async(topic_id, f"llm_raw/{call_id}", payload)
 
     async def generate_model(
         self,
@@ -100,11 +128,12 @@ class LLMService:
             response = await self.provider.generate_json(system_prompt, full_prompt)
             parsed = parse_json_content(response.content)
             validated = response_model.model_validate(parsed)
-            self._record(session, topic_id, step, full_prompt, response, parsed=parsed)
-            session.commit()
+            await self._record_and_commit(
+                session, topic_id, step, full_prompt, response, parsed=parsed
+            )
             return validated
         except (json.JSONDecodeError, ValueError, ValidationError) as first_error:
-            self._record(
+            await self._record_and_commit(
                 session,
                 topic_id,
                 f"{step}:invalid_json",
@@ -123,13 +152,17 @@ class LLMService:
                 )
                 parsed = parse_json_content(repaired.content)
                 validated = response_model.model_validate(parsed)
-                self._record(
-                    session, topic_id, f"{step}:repair", repair_prompt, repaired, parsed=parsed
+                await self._record_and_commit(
+                    session,
+                    topic_id,
+                    f"{step}:repair",
+                    repair_prompt,
+                    repaired,
+                    parsed=parsed,
                 )
-                session.commit()
                 return validated
             except Exception as repair_error:
-                self._record(
+                await self._record_and_commit(
                     session,
                     topic_id,
                     f"{step}:repair_failed",
@@ -137,13 +170,11 @@ class LLMService:
                     repaired,
                     error=str(repair_error),
                 )
-                session.commit()
                 raise RuntimeError(f"LLM JSON 校验失败：{repair_error}") from repair_error
         except Exception as error:
-            self._record(
+            await self._record_and_commit(
                 session, topic_id, step, full_prompt, response, error=describe_error(error)
             )
-            session.commit()
             raise
 
     async def generate_text(
@@ -157,12 +188,10 @@ class LLMService:
         response: LLMResponse | None = None
         try:
             response = await self.provider.generate_text(system_prompt, user_prompt)
-            self._record(session, topic_id, step, user_prompt, response)
-            session.commit()
+            await self._record_and_commit(session, topic_id, step, user_prompt, response)
             return response.content
         except Exception as error:
-            self._record(
+            await self._record_and_commit(
                 session, topic_id, step, user_prompt, response, error=describe_error(error)
             )
-            session.commit()
             raise

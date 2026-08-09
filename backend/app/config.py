@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,8 +24,10 @@ class Settings(BaseSettings):
     app_port: int = 8000
     frontend_origin: str = "http://localhost:3000"
     log_level: str = "INFO"
+    access_log: bool = False
 
     database_url: str = "sqlite:///./data/hotstory.db"
+    sqlite_busy_timeout_ms: int = Field(default=30000, ge=1000, le=120000)
     data_dir: Path = PROJECT_ROOT / "data"
     research_engine: str = "native"
 
@@ -51,10 +54,20 @@ class Settings(BaseSettings):
     enable_playwright_fallback: bool = True
     request_timeout_seconds: float = Field(default=25, ge=3, le=120)
     max_retries: int = Field(default=3, ge=0, le=8)
-    llm_timeout_seconds: float = Field(default=60, ge=10, le=300)
+    llm_timeout_seconds: float = Field(default=240, ge=10, le=300)
     llm_max_retries: int = Field(default=1, ge=0, le=4)
+    llm_max_output_tokens: int = Field(default=65536, ge=1024, le=384000)
     fetch_concurrency: int = Field(default=5, ge=1, le=12)
-    llm_concurrency: int = Field(default=2, ge=1, le=8)
+    llm_concurrency: int = Field(default=3, ge=1, le=8)
+    max_concurrent_pipelines: int = Field(default=1, ge=1, le=4)
+    llm_raw_retention: int = Field(default=200, ge=0)
+    search_query_pause_seconds: float = Field(default=0.6, ge=0, le=10)
+    search_min_success_ratio: float = Field(default=0.2, ge=0, le=1)
+    deepseek_thinking_enabled: bool = True
+    deepseek_reasoning_effort: Literal["high", "max"] = "max"
+    production_deepseek_reasoning_effort: Literal["high", "max"] = "max"
+    production_llm_timeout_seconds: float = Field(default=240, ge=30, le=300)
+    production_llm_max_output_tokens: int = Field(default=65536, ge=1024, le=384000)
 
     codex_cli_path: str = "codex"
     codex_cli_model: str = ""

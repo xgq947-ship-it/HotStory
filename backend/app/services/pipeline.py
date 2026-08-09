@@ -5,20 +5,23 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings, get_settings
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, checkpoint_wal
 from app.models import Event, Fact, SearchRun, Source, StepRun, Topic
-from app.schemas.domain import ResearchPlanData
+from app.schemas.domain import ProductionPackageData, ResearchPlanData
 from app.services.artifacts import ProjectStore
 from app.services.crawler import create_crawler_provider
 from app.services.crawler.provider import CrawlerProvider
 from app.services.events import EventClusterer
 from app.services.facts import FactExtractor, cross_validate_claims, verify_facts
+from app.services.httpclient import aclose, create_crawl_client, create_llm_client
 from app.services.llm import LLMProvider, LLMService, create_llm_provider
 from app.services.materials import material_counts, material_ready, material_shortage_message
+from app.services.production import ProductionPackageBuilder
 from app.services.research import GPTResearcherEngine, NativeResearchEngine, ResearchEngine
 from app.services.script import ScriptReviewer, ScriptWriter, StoryBuilder, ValueBuilder
 from app.services.search import create_search_provider
@@ -49,17 +52,59 @@ class Pipeline:
     ) -> None:
         self.settings = settings or get_settings()
         self.store = ProjectStore(self.settings)
-        self.llm_provider = llm_provider or create_llm_provider(self.settings)
+        # 连接复用：以前每次 LLM 请求、每次抓取都新建 AsyncClient，等于每次一次 TLS 握手。
+        self._llm_client: httpx.AsyncClient | None = (
+            None if llm_provider else create_llm_client(self.settings)
+        )
+        self._crawl_client: httpx.AsyncClient | None = (
+            None if crawler_provider else create_crawl_client(self.settings)
+        )
+        self.llm_provider = llm_provider or create_llm_provider(self.settings, self._llm_client)
         self.search_provider = search_provider or create_search_provider(self.settings)
-        self.crawler_provider = crawler_provider or create_crawler_provider(self.settings)
+        self.crawler_provider = crawler_provider or create_crawler_provider(
+            self.settings, self._crawl_client
+        )
         self.session_factory = session_factory or SessionLocal
         self.tracker = StepTracker()
+        self._production_llm_cache: tuple[LLMService, str] | None = None
+
+    async def aclose(self) -> None:
+        await aclose(self._llm_client, self._crawl_client)
 
     def _engine(self, session: Session, topic: Topic, llm: LLMService) -> ResearchEngine:
         native = NativeResearchEngine(session, topic.id, llm, self.search_provider, self.settings)
         if self.settings.research_engine.lower() == "gpt_researcher":
             return GPTResearcherEngine(native)
         return native
+
+    def _production_llm(self) -> tuple[LLMService, str]:
+        # 每次调用都重造 provider 会丢掉连接池；production 是 240s / 65K token 的大请求。
+        if self._production_llm_cache is not None:
+            return self._production_llm_cache
+        self._production_llm_cache = self._build_production_llm()
+        return self._production_llm_cache
+
+    def _build_production_llm(self) -> tuple[LLMService, str]:
+        provider = self.llm_provider
+        profile = f"{provider.model}"
+        if provider.name == "deepseek":
+            production_settings = self.settings.model_copy(
+                update={
+                    "deepseek_thinking_enabled": True,
+                    "deepseek_reasoning_effort": self.settings.production_deepseek_reasoning_effort,
+                    "llm_timeout_seconds": self.settings.production_llm_timeout_seconds,
+                    "llm_max_output_tokens": max(
+                        self.settings.llm_max_output_tokens,
+                        self.settings.production_llm_max_output_tokens,
+                    ),
+                }
+            )
+            provider = create_llm_provider(production_settings, self._llm_client)
+            profile = (
+                f"{provider.model} · "
+                f"{self.settings.production_deepseek_reasoning_effort.upper()}"
+            )
+        return LLMService(provider, self.store), profile
 
     async def run(self, topic_id: str) -> None:
         session = self.session_factory()
@@ -87,6 +132,7 @@ class Pipeline:
             await self._value(session, topic, llm)
             await self._write(session, topic, llm)
             await self._review(session, topic, llm)
+            await self._production(session, topic, llm)
             await self._export(session, topic)
             topic.status = "COMPLETED"
             topic.current_step = "export"
@@ -95,6 +141,21 @@ class Pipeline:
             self.store.save_json(session, topic.id, "topic", topic_dict(topic))
             session.commit()
             logger.info("pipeline completed", extra={"topic_id": topic.id, "step": "export"})
+        except asyncio.CancelledError:
+            # 关服务时任务会被 cancel。CancelledError 不是 Exception 的子类，
+            # 不单独处理的话 StepRun 会永远停在 RUNNING，只能等下次启动才被修。
+            session.rollback()
+            try:
+                topic = session.get(Topic, topic_id)
+                if topic:
+                    step = topic.current_step or "unknown"
+                    self.tracker.fail(
+                        session, topic, step, "服务关闭，任务被中断；点击继续可恢复。"
+                    )
+            except Exception:
+                logger.warning("failed to mark cancelled topic", extra={"topic_id": topic_id})
+            logger.info("pipeline cancelled", extra={"topic_id": topic_id})
+            raise
         except Exception as error:
             session.rollback()
             topic = session.get(Topic, topic_id)
@@ -104,6 +165,18 @@ class Pipeline:
             logger.exception("pipeline failed", extra={"topic_id": topic_id})
         finally:
             session.close()
+            self._housekeeping(topic_id)
+
+    def _housekeeping(self, topic_id: str) -> None:
+        """跑完一次就把 WAL 收回去、把 llm_raw 裁掉；两者都会无上限增长。"""
+        try:
+            self.store.prune_llm_raw(topic_id, self.settings.llm_raw_retention)
+        except Exception:
+            logger.warning("llm_raw prune failed", extra={"topic_id": topic_id})
+        try:
+            checkpoint_wal(self.session_factory.kw.get("bind"))
+        except Exception:
+            logger.warning("wal checkpoint failed", extra={"topic_id": topic_id})
 
     async def _plan(self, session: Session, topic: Topic, engine: ResearchEngine) -> None:
         if not self.tracker.start(session, topic, "plan"):
@@ -163,10 +236,12 @@ class Pipeline:
             semaphore = asyncio.Semaphore(self.settings.fetch_concurrency)
 
             async def fetch_one(source: Source) -> tuple[str, Any, str | None]:
+                # 已经放弃的源要跳过，而不是当成"又失败一次"——否则每次重跑该步
+                # retry_count 都会继续涨，日志里的重试次数就不可信了。
                 if source.fetch_status == "SUCCESS":
                     return source.id, None, None
                 if source.retry_count >= self.settings.max_retries + 1:
-                    return source.id, None, source.fetch_error or "已达到最大重试次数"
+                    return source.id, None, None
                 async with semaphore:
                     try:
                         document = await self.crawler_provider.fetch(source.url)
@@ -408,6 +483,58 @@ class Pipeline:
             self.tracker.fail(session, topic, "export", str(error))
             raise
 
+    async def _production(
+        self, session: Session, topic: Topic, llm: LLMService
+    ) -> None:
+        if not self.tracker.start(session, topic, "production"):
+            return
+        try:
+            production_llm, llm_profile = self._production_llm()
+            package = await ProductionPackageBuilder(
+                production_llm,
+                self.store,
+                self.settings.llm_concurrency,
+                planning_llm=llm,
+                llm_profile=llm_profile,
+            ).build(
+                session, topic, topic.requested_duration
+            )
+            self.store.save_json(session, topic.id, "production_package", package)
+            session.commit()
+            self.tracker.complete(
+                session,
+                topic,
+                "production",
+                sha256_text(stable_json(package.model_dump(mode="json"))),
+            )
+        except Exception as error:
+            self.tracker.fail(session, topic, "production", str(error))
+            raise
+
+    async def regenerate_production_shot(
+        self, topic_id: str, shot_id: str, current_prompt: str = ""
+    ) -> ProductionPackageData:
+        session = self.session_factory()
+        try:
+            topic = session.get(Topic, topic_id)
+            if not topic:
+                raise LookupError(f"Topic 不存在：{topic_id}")
+            llm, llm_profile = self._production_llm()
+            package = await ProductionPackageBuilder(
+                llm,
+                self.store,
+                self.settings.llm_concurrency,
+                llm_profile=llm_profile,
+            ).regenerate_shot(session, topic, shot_id, current_prompt)
+            self.store.save_json(session, topic.id, "production_package", package)
+            session.commit()
+            return package
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def prepare_continue(self, topic_id: str) -> Topic:
         with self.session_factory() as session:
             topic = session.get(Topic, topic_id)
@@ -426,6 +553,20 @@ class Pipeline:
             self.tracker.reset_from(session, topic, "write")
             return topic
 
+    def prepare_production(self, topic_id: str) -> Topic:
+        with self.session_factory() as session:
+            topic = session.get(Topic, topic_id)
+            if not topic:
+                raise LookupError(f"Topic 不存在：{topic_id}")
+            if not self.store.load_text(session, topic.id, "script"):
+                raise RuntimeError("剧本尚未生成")
+            self.tracker.reset_from(session, topic, "production")
+            return topic
+
+
+class PipelineBusyError(RuntimeError):
+    """已有别的主题在跑。本地单用户场景不允许并行，两条管道会让所有开销翻倍。"""
+
 
 class PipelineRunner:
     def __init__(self, pipeline: Pipeline) -> None:
@@ -436,13 +577,37 @@ class PipelineRunner:
         task = self.tasks.get(topic_id)
         return bool(task and not task.done())
 
+    def active_topic_ids(self) -> list[str]:
+        return [topic_id for topic_id, task in self.tasks.items() if not task.done()]
+
+    def ensure_capacity(self, topic_id: str) -> None:
+        """在改任何状态之前先问容量。prepare_* 会删 StepRun 并直接提交，
+        先改后拒会把目标主题留在"非终态但没人在跑"的死局里。"""
+        if self.running(topic_id):
+            return
+        active = self.active_topic_ids()
+        if len(active) >= self.pipeline.settings.max_concurrent_pipelines:
+            raise PipelineBusyError(
+                f"已有任务在运行（{active[0]}），请等它结束或先停止它。"
+            )
+
     def start(self, topic_id: str) -> bool:
         if self.running(topic_id):
             return False
+        self.ensure_capacity(topic_id)
         task = asyncio.create_task(self.pipeline.run(topic_id), name=f"hotstory:{topic_id}")
         self.tasks[topic_id] = task
         task.add_done_callback(lambda _task: self.tasks.pop(topic_id, None))
         return True
+
+    async def shutdown(self, wait_seconds: float = 20.0) -> None:
+        """取消在跑的任务并等它们把状态落库，再关连接池。"""
+        tasks = [task for task in self.tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.wait(tasks, timeout=wait_seconds)
+        await self.pipeline.aclose()
 
 
 def recover_interrupted_topics(session: Session) -> int:

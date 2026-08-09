@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -25,7 +27,10 @@ ARTIFACT_FILES = {
     "value": "value.json",
     "review": "review.json",
     "script": "script.md",
+    "production_package": "production_package.json",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _serializable(value: Any) -> Any:
@@ -72,6 +77,35 @@ class ProjectStore:
         self._atomic_write(path, payload + "\n")
         return path
 
+    async def save_json_file_async(self, topic_id: str, kind: str, value: Any) -> Path:
+        """序列化 + fsync 都是同步阻塞的；在管道里调用时放到线程里。"""
+        return await asyncio.to_thread(self.save_json_file, topic_id, kind, value)
+
+    def prune_llm_raw(self, topic_id: str, keep: int) -> int:
+        """llm_raw 每次调用写一个文件，单题实测能到 129 个。keep=0 表示不限制。"""
+        if keep <= 0:
+            return 0
+        directory = self.settings.projects_dir / topic_id / "llm_raw"
+        if not directory.is_dir():
+            return 0
+        try:
+            files = sorted(
+                (path for path in directory.glob("*.json") if path.is_file()),
+                key=lambda path: path.stat().st_mtime,
+            )
+        except OSError:
+            return 0
+        removed = 0
+        for path in files[: max(0, len(files) - keep)]:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+        if removed:
+            logger.info("pruned llm_raw files", extra={"topic_id": topic_id})
+        return removed
+
     def save_text_file(self, topic_id: str, kind: str, content: str) -> Path:
         filename = ARTIFACT_FILES.get(kind, f"{kind}.md")
         path = self.topic_dir(topic_id) / filename
@@ -106,6 +140,19 @@ class ProjectStore:
             session.add(artifact)
         session.flush()
         return self.save_text_file(topic_id, kind, content)
+
+    def versions(self, session: Session, topic_id: str) -> dict[str, int]:
+        rows = session.execute(
+            select(Artifact.kind, Artifact.version).where(Artifact.topic_id == topic_id)
+        ).all()
+        return {kind: version for kind, version in rows}
+
+    def version(self, session: Session, topic_id: str, kind: str) -> int | None:
+        return session.scalar(
+            select(Artifact.version).where(
+                Artifact.topic_id == topic_id, Artifact.kind == kind
+            )
+        )
 
     def load_json(self, session: Session, topic_id: str, kind: str) -> Any | None:
         artifact = session.scalar(

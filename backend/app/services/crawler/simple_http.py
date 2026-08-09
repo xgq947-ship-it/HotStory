@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from urllib.parse import urljoin, urlsplit
 
@@ -10,6 +11,7 @@ from bs4 import BeautifulSoup
 from app.config import Settings
 from app.schemas.domain import CrawledDocumentData
 from app.services.crawler.provider import CrawlerProvider
+from app.services.httpclient import BROWSER_HEADERS
 
 
 def discover_original_url(soup: BeautifulSoup, response_url: str) -> str:
@@ -41,6 +43,54 @@ def detect_language(text: str) -> str:
     return "en" if sample else ""
 
 
+def extract_document(html: str, response_url: str, crawler_name: str) -> CrawledDocumentData:
+    """纯同步的正文抽取。trafilatura 和 BeautifulSoup 都是 CPU 密集的，
+    必须放到线程里跑，否则会占住事件循环。"""
+    raw_text = (
+        trafilatura.extract(
+            html,
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
+            output_format="txt",
+        )
+        or ""
+    )
+    markdown = (
+        trafilatura.extract(
+            html,
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
+            output_format="markdown",
+        )
+        or raw_text
+    )
+    metadata = trafilatura.extract_metadata(html)
+    soup = BeautifulSoup(html, "html.parser")
+    original_url = discover_original_url(soup, response_url)
+    title = getattr(metadata, "title", None) or (
+        soup.title.get_text(" ", strip=True) if soup.title else ""
+    )
+    author = getattr(metadata, "author", None) or ""
+    published_at = getattr(metadata, "date", None) or ""
+    if len(raw_text.strip()) < 160:
+        fallback = soup.get_text("\n", strip=True)
+        raw_text = fallback if len(fallback) > len(raw_text) else raw_text
+        if not markdown:
+            markdown = raw_text
+    return CrawledDocumentData(
+        url=original_url,
+        title=title or "",
+        published_at=str(published_at or ""),
+        author=author,
+        raw_text=raw_text.strip(),
+        markdown=markdown.strip(),
+        language=detect_language(raw_text),
+        crawler=crawler_name,
+    )
+
+
 class SimpleHttpCrawler(CrawlerProvider):
     name = "simple_http"
 
@@ -53,13 +103,7 @@ class SimpleHttpCrawler(CrawlerProvider):
         client = self._client or httpx.AsyncClient(
             follow_redirects=True,
             timeout=httpx.Timeout(self.settings.request_timeout_seconds),
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 Chrome/124 Safari/537.36 HotStory/0.1"
-                ),
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
-            },
+            headers=BROWSER_HEADERS,
         )
         try:
             response = await client.get(url)
@@ -69,49 +113,8 @@ class SimpleHttpCrawler(CrawlerProvider):
                 raise ValueError(f"不支持的正文类型：{content_type or 'unknown'}")
             if len(response.content) > 8_000_000:
                 raise ValueError("页面超过 8MB 安全上限")
-            html = response.text
-            raw_text = (
-                trafilatura.extract(
-                    html,
-                    include_comments=False,
-                    include_tables=True,
-                    favor_precision=True,
-                    output_format="txt",
-                )
-                or ""
-            )
-            markdown = (
-                trafilatura.extract(
-                    html,
-                    include_comments=False,
-                    include_tables=True,
-                    favor_precision=True,
-                    output_format="markdown",
-                )
-                or raw_text
-            )
-            metadata = trafilatura.extract_metadata(html)
-            soup = BeautifulSoup(html, "html.parser")
-            original_url = discover_original_url(soup, str(response.url))
-            title = getattr(metadata, "title", None) or (
-                soup.title.get_text(" ", strip=True) if soup.title else ""
-            )
-            author = getattr(metadata, "author", None) or ""
-            published_at = getattr(metadata, "date", None) or ""
-            if len(raw_text.strip()) < 160:
-                fallback = soup.get_text("\n", strip=True)
-                raw_text = fallback if len(fallback) > len(raw_text) else raw_text
-                if not markdown:
-                    markdown = raw_text
-            return CrawledDocumentData(
-                url=original_url,
-                title=title or "",
-                published_at=str(published_at or ""),
-                author=author,
-                raw_text=raw_text.strip(),
-                markdown=markdown.strip(),
-                language=detect_language(raw_text),
-                crawler=self.name,
+            return await asyncio.to_thread(
+                extract_document, response.text, str(response.url), self.name
             )
         finally:
             if own_client:

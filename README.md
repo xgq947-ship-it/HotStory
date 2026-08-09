@@ -14,6 +14,11 @@ HotStory 是一个 macOS 本地运行的热点纪实剧本生成器。它先研�
 - 死亡、自杀、犯罪、重大财产损失、医疗、未成年人等敏感事实必须至少有两个独立来源。
 - 每个 Pipeline 步骤保存状态；服务中断后可从已完成步骤继续，不重复搜索、抓取或模型调用。
 - 剧本完成后自动审校，低于 85 分最多修订两次。
+- 审校通过后自动生成角色参考图提示词、表演主档案和逐镜头成片提示词。
+- 影视提示词链路逐字加载完整的 `lira-image-prompts → acting-ai-video → cinedance-higgsfield` SKILL.md，不使用摘要版规则。
+- 60/90/180 秒剧本分别拆成 6/9/18 个独立镜头，单镜头硬限制为不超过 10 秒。
+- 每个镜头可单独编辑、复制和重新优化；角色参考图可按角色启用或停用，只有真实 @标签才会写入提示词。
+- 提示词使用无损策略：不总结、不缩写、不截断；10 秒上限只用于拆镜头，不用于压缩提示词。
 
 ## 架构
 
@@ -30,6 +35,8 @@ NativeResearchEngine（可换 GPTResearcherEngine）
 Fact Extractor → Event Cluster → Verification → Timeline
              ↓
 Story Builder → Value Builder → Script Writer → Review
+             ↓
+Character Assets → Shot Plan（≤10s）→ Cinematic Prompts
 ```
 
 第三方项目均通过 Library、HTTP API、Adapter 或 Provider 接入，不复制其源码。版本与 License 见 [THIRD_PARTY.md](./THIRD_PARTY.md)。
@@ -43,6 +50,18 @@ Story Builder → Value Builder → Script Writer → Review
 - [uv](https://docs.astral.sh/uv/)
 
 ## 快速启动
+
+macOS 可以直接双击项目根目录的 `HotStory.app`。应用会自动启动前后端并打开浏览器，退出应用时会停止由它启动的服务。
+
+双击版跑的是**生产模式**（`next start` + 不带 `--reload` 的 uvicorn），启动器会在需要时自动构建前端；它还会校验 `node_modules` 与当前 node 的架构是否一致，不一致就重装（避免 Apple Silicon 上装出 x64 原生模块）。修改启动器或前端后重新生成：
+
+```bash
+./scripts/build_app.sh
+```
+
+日志写在 `data/hotstory-app.log`，超过 10MB 自动滚动保留最近 3 份；后端日志是 JSON 行，默认不记录逐条 HTTP 访问日志（需要时设 `ACCESS_LOG=true`）。
+
+开发时用 `./scripts/dev.sh`，它跑的是带热重载的开发模式。也可以在终端运行：
 
 项目已经创建好 Python 3.12 虚拟环境和前端依赖，直接运行：
 
@@ -81,7 +100,7 @@ LLM_BASE_URL=https://api.deepseek.com
 DEEPSEEK_API_KEY=你的密钥
 ```
 
-模型请求默认 60 秒超时、最多重试 1 次；坏来源会被记录并跳过，不会把整轮研究卡死。写稿或自动修订遇到超时、空响应时，会改用已核验素材生成安全版本。可用 `LLM_TIMEOUT_SECONDS` 与 `LLM_MAX_RETRIES` 调整。
+全局默认使用真正的 DeepSeek V4 Flash MAX：研究规划、事实提取、事件聚类、核验、时间线、故事、价值、写稿、审校、角色资产与逐镜头优化全部启用思考模式和 `reasoning_effort=max`。全局超时为 240 秒、输出上限为 65536 token、最多重试 1 次。逐镜头批次最多 3 路并发；并发只减少串行等待，不会缩短 SKILL 或成品提示词。MAX 会显著增加单步耗时与 Token 消耗，可用 `LLM_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES`、`LLM_MAX_OUTPUT_TOKENS`、`LLM_CONCURRENCY`、`DEEPSEEK_THINKING_ENABLED` 与 `DEEPSEEK_REASONING_EFFORT` 调整。
 
 DeepSeek 通过兼容 Chat Completions 的 `/chat/completions` 接口调用，结构化阶段使用 JSON Output。模型目录可能变化，升级前请检查 [DeepSeek 官方文档](https://api-docs.deepseek.com/)。
 
@@ -196,6 +215,7 @@ data/projects/{topic_id}/
 ├── value.json
 ├── review.json
 ├── script.md
+├── production_package.json
 └── llm_raw/
 ```
 
@@ -224,6 +244,10 @@ GET  /api/topics/{id}/timeline
 GET  /api/topics/{id}/story
 GET  /api/topics/{id}/script
 GET  /api/topics/{id}/script/download
+GET  /api/topics/{id}/production-package
+GET  /api/topics/{id}/production-package/download
+POST /api/topics/{id}/production-package
+POST /api/topics/{id}/production-package/shots/{shot_id}/regenerate
 POST /api/topics/{id}/continue
 POST /api/topics/{id}/rewrite-script
 GET  /api/hotspots
@@ -262,13 +286,17 @@ GET  /api/hotspots
 
 **健康检查显示 `llm_ready=false`**：检查 `.env` 中对应 Provider 的模型与 Key。Codex CLI 模式检查 `codex --version` 和登录状态。
 
-**搜索结果较少**：DuckDuckGo 可能限流，可切换 Tavily / Brave / Serper；也可点击“继续深挖”增加本地语言与原始资料查询。
+**搜索结果较少**：DuckDuckGo 可能限流，可切换 Tavily / Brave / Serper；也可点击“继续深挖”增加本地语言与原始资料查询。搜索几乎全部失败时会直接在 search 步报错并标明 Provider，不会拖到 fetch 步才失败。
 
 **部分网页抓取失败**：这是正常现象，系统会记录错误并继续其他来源。动态页面可安装 Crawl4AI 与 Chromium。
 
-**服务意外退出**：重新运行 `./scripts/dev.sh`，打开原 Topic 后点击继续。成功步骤不会重复消耗 API。
+**服务意外退出**：重新运行 `./scripts/dev.sh` 或重新打开 `HotStory.app`，打开原 Topic 后点击继续。成功步骤不会重复消耗 API。正常关闭时在跑的任务会被标成"已中断"，同样可以继续。
+
+**提示"已有任务在运行"**：本地默认同时只跑一条管道（`MAX_CONCURRENT_PIPELINES`），等当前主题结束再开下一个。
 
 **端口被占用**：关闭占用 8000 或 3000 的本地进程后重启。
+
+**前端报 `Cannot find module '../lightningcss.darwin-*.node'`**：`node_modules` 的架构和当前 node 不一致。启动器会自动重装；手动修复用 `rm -rf frontend/node_modules && npm install`（Apple Silicon 上确保用 arm64 的 node）。
 
 ## 原则
 
