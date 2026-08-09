@@ -9,11 +9,17 @@ from sqlalchemy.orm import Session
 
 from app.models import Topic
 from app.schemas.domain import (
+    AnimaticCheckData,
+    AudioCueData,
     CharacterAssetData,
     CharacterAssetDraft,
     CharacterCatalogDraft,
     CinematicShotData,
+    GlobalAudioPlanData,
+    InternalShotData,
+    NarrativeQualityData,
     ProductionPackageData,
+    ProductionReadinessData,
     ShotPlanDraft,
     ShotPlanResult,
     ShotPromptBatch,
@@ -134,6 +140,7 @@ PROMPT_SECTION_HEADINGS = (
     "有效参考资产",
     "场景空间图",
     "首帧与空间调度",
+    "连续性状态",
     DISPLAY_GEOMETRY_HEADING,
     "格式模式",
     "光学",
@@ -183,28 +190,99 @@ class ProductionPackageBuilder:
             raise RuntimeError("缺少已通过审校的剧本")
 
         context = narrative_context(session, topic, self.store)
-        style_bible, characters = await self._build_characters(
-            session, topic, script, context
+        story = context.get("story_arc", {})
+        review = self.store.load_json(session, topic.id, "review") or {}
+        script_meta = self.store.load_json(session, topic.id, "script_meta") or {}
+        self._record_upstream_fallbacks(story, script_meta)
+        story_quality = NarrativeQualityData.model_validate(story.get("quality") or {})
+        upstream_ready = bool(
+            story.get("generation_mode") == "ai_generated"
+            and story_quality.passed
+            and script_meta.get("generation_mode") == "ai_generated"
+            and review.get("passed", False)
         )
-        target_shot_count = max(1, min(18, math.ceil(duration / 10)))
-        shot_plan = await self._build_shot_plan(
+        target_unit_count = self._target_generation_unit_count(duration)
+        if upstream_ready:
+            style_bible, characters = await self._build_characters(
+                session, topic, script, context
+            )
+            shot_plan, audio_plan = await self._build_shot_plan(
+                session,
+                topic,
+                script,
+                context,
+                characters,
+                duration,
+                target_unit_count,
+            )
+        else:
+            self.ai_failures += 1
+            self.warnings.append(
+                "上游叙事质量门未通过，已跳过高成本角色与逐生成单元模型调用；"
+                "当前包只用于诊断。"
+            )
+            style_bible, characters = self._normalize_characters(
+                self._fallback_character_catalog(context), context
+            )
+            raw_plan = self._fallback_shot_plan(
+                script, characters, duration, context, target_unit_count
+            )
+            shot_plan = self._normalize_shot_plan(
+                raw_plan,
+                script,
+                context,
+                characters,
+                duration,
+                target_unit_count,
+            )
+            audio_plan = self._normalize_audio_plan(
+                GlobalAudioPlanData(), shot_plan, duration
+            )
+        animatic = self._check_animatic(shot_plan, duration)
+        shot_prompt_ready = upstream_ready and animatic.passed
+        if upstream_ready and not animatic.passed:
+            self.ai_failures += 1
+            self.warnings.append(
+                "低成本节奏样片未通过，已跳过逐生成单元高成本模型调用："
+                + "；".join(animatic.issues[:3])
+            )
+        shots = await self._build_shot_prompts(
             session,
             topic,
             script,
             context,
+            style_bible,
             characters,
-            duration,
-            target_shot_count,
+            shot_plan,
+            audio_plan,
+            allow_ai=shot_prompt_ready,
         )
-        shots = await self._build_shot_prompts(
-            session, topic, script, context, style_bible, characters, shot_plan
+        production_mode = self._generation_mode()
+        readiness = self._build_readiness(
+            story=story,
+            review=review,
+            script_meta=script_meta,
+            animatic=animatic,
+            production_mode=production_mode,
         )
+        if not readiness.passed and production_mode == "ai_optimized":
+            production_mode = "mixed"
         return ProductionPackageData(
             topic_id=topic.id,
             generated_at=datetime.now(UTC).isoformat(),
             duration_seconds=duration,
             llm_profile=self.llm_profile,
-            generation_mode=self._generation_mode(),
+            generation_unit_count=len(shots),
+            internal_shot_count=sum(len(shot.internal_shots) for shot in shots),
+            narrative_mode=story.get("narrative_mode", "cinematic_human_story"),
+            story_generation_mode=story.get("generation_mode", "legacy"),
+            script_generation_mode=script_meta.get("generation_mode", "legacy"),
+            generation_mode=production_mode,
+            ready_for_generation=readiness.passed,
+            readiness=readiness,
+            narrative_quality=story_quality,
+            animatic=animatic,
+            audio_plan=audio_plan,
             warnings=self._warnings_with_compliance(),
             style_bible=style_bible,
             skills=[
@@ -217,13 +295,13 @@ class ProductionPackageBuilder:
                 SkillStageData(
                     order=2,
                     skill="acting-ai-video",
-                    purpose="角色表演主档案与逐镜头表演适配",
+                    purpose="角色表演主档案与生成单元内部表演适配",
                     source_sha256=self._skill_sha256("acting-ai-video"),
                 ),
                 SkillStageData(
                     order=3,
                     skill="cinedance-higgsfield",
-                    purpose="可直接生成视频的镜头调度提示词",
+                    purpose="可一次生成多个内部镜头的 10 秒调度提示词",
                     source_sha256=self._skill_sha256("cinedance-higgsfield"),
                 ),
             ],
@@ -273,6 +351,7 @@ class ProductionPackageBuilder:
             package.style_bible,
             package.characters,
             [ShotPlanDraft.model_validate(previous.model_dump())],
+            package.audio_plan,
             step_prefix=f"production:regenerate:{shot_id}:r{previous.revision + 1}",
             previous_prompts={shot_id: safe_current_prompt} if safe_current_prompt else {},
             previous_ambient={shot_id: previous.ambient_audio},
@@ -286,6 +365,20 @@ class ProductionPackageBuilder:
             package.warnings = list(dict.fromkeys([*package.warnings, *self.warnings]))
             if package.generation_mode == "ai_optimized":
                 package.generation_mode = "mixed"
+            package.ready_for_generation = False
+            blockers = list(
+                dict.fromkeys(
+                    [
+                        *package.readiness.blockers,
+                        "当前镜头重新优化没有通过完整控制校验",
+                    ]
+                )
+            )
+            package.readiness = ProductionReadinessData(
+                passed=False,
+                score=max(0, 100 - 18 * len(blockers)),
+                blockers=blockers,
+            )
         elif package.generation_mode == "fallback":
             package.generation_mode = "mixed"
         return package
@@ -426,17 +519,18 @@ class ProductionPackageBuilder:
         context: dict,
         characters: list[CharacterAssetData],
         duration: int,
-        target_shot_count: int,
-    ) -> list[ShotPlanDraft]:
+        target_unit_count: int,
+    ) -> tuple[list[ShotPlanDraft], GlobalAudioPlanData]:
         prompt = render_prompt(
             "shot_plan",
             topic=topic.title,
             duration=duration,
-            target_shot_count=target_shot_count,
+            target_generation_unit_count=target_unit_count,
             script=script,
             characters=stable_json([item.model_dump(mode="json") for item in characters]),
             context=stable_json(context),
         )
+        audio_draft = GlobalAudioPlanData()
         try:
             result = await self.planning_llm.generate_model(
                 session,
@@ -446,16 +540,20 @@ class ProductionPackageBuilder:
                 prompt,
                 ShotPlanResult,
             )
-            if len(result.shots) != target_shot_count:
-                raise ValueError("镜头数量不符合目标")
+            if len(result.shots) != target_unit_count:
+                raise ValueError("生成单元数量不符合目标")
             raw_shots = result.shots
+            audio_draft = result.audio_plan
             self.ai_successes += 1
         except Exception as error:
             self._record_ai_failure("镜头规划", error)
-            raw_shots = self._fallback_shot_plan(script, characters, duration, context)
-        return self._normalize_shot_plan(
-            raw_shots, script, context, characters, duration, target_shot_count
+            raw_shots = self._fallback_shot_plan(
+                script, characters, duration, context, target_unit_count
+            )
+        normalized = self._normalize_shot_plan(
+            raw_shots, script, context, characters, duration, target_unit_count
         )
+        return normalized, self._normalize_audio_plan(audio_draft, normalized, duration)
 
     def _normalize_shot_plan(
         self,
@@ -464,44 +562,364 @@ class ProductionPackageBuilder:
         context: dict,
         characters: list[CharacterAssetData],
         duration: int,
-        target_shot_count: int,
+        target_unit_count: int,
     ) -> list[ShotPlanDraft]:
-        if len(raw_shots) != target_shot_count:
-            raw_shots = self._fallback_shot_plan(script, characters, duration, context)
+        if len(raw_shots) != target_unit_count:
+            raw_shots = self._fallback_shot_plan(
+                script, characters, duration, context, target_unit_count
+            )
         valid_character_ids = {item.id for item in characters}
         valid_event_ids = {item.get("id", "") for item in context.get("events", [])}
         valid_source_ids = {item.get("id", "") for item in context.get("sources", [])}
+        beats = context.get("story_arc", {}).get("beats", [])
+        beat_by_id = {beat.get("beat_id", ""): beat for beat in beats}
+        windows = self._generation_unit_windows(duration, target_unit_count)
         normalized: list[ShotPlanDraft] = []
-        for index, item in enumerate(raw_shots[:target_shot_count]):
-            start, end = self._shot_window(index, duration, target_shot_count)
+        for index, item in enumerate(raw_shots[:target_unit_count]):
+            start, end = windows[index]
+            beat_index = (
+                min(len(beats) - 1, (index * len(beats)) // target_unit_count)
+                if beats
+                else 0
+            )
+            beat_end = (
+                max(
+                    beat_index + 1,
+                    min(
+                        len(beats),
+                        ((index + 1) * len(beats)) // target_unit_count,
+                    ),
+                )
+                if beats
+                else 0
+            )
+            default_beats = beats[beat_index:beat_end] if beats else []
+            default_beat = default_beats[0] if default_beats else {}
+            requested_beat_ids = {
+                value
+                for value in [item.beat_id, *item.beat_ids]
+                if value in beat_by_id
+            }
+            requested_beat_ids.update(
+                beat.get("beat_id", "") for beat in default_beats
+            )
+            beat_ids = [
+                beat.get("beat_id", "")
+                for beat in beats
+                if beat.get("beat_id", "") in requested_beat_ids
+            ][:3]
+            if not beats:
+                beat_ids = list(
+                    dict.fromkeys(value for value in [item.beat_id, *item.beat_ids] if value)
+                )[:3]
+            beat_id = beat_ids[0] if beat_ids else ""
+            beat = beat_by_id.get(beat_id) or default_beat
+            sequence_id = (
+                item.sequence_id
+                if item.beat_id and item.sequence_id
+                else f"sequence_{beat_index + 1:02d}"
+            )
+            value_before = item.value_before or beat.get("value_before", "")
+            value_after = item.value_after or beat.get("value_after", "")
+            entry_state = item.entry_state or value_before or "当前局势清楚可读"
+            exit_state = item.exit_state or value_after or "当前信息已改变局势"
+            intensity = (
+                item.intensity
+                if item.beat_id or not beat
+                else int(beat.get("intensity", item.intensity))
+            )
+            event_ids = [
+                value
+                for value in dict.fromkeys(item.event_ids)
+                if value in valid_event_ids
+            ]
+            if not event_ids:
+                event_ids = [
+                    value
+                    for grouped_beat in (default_beats or [beat])
+                    for value in grouped_beat.get("event_ids", [])
+                    if value in valid_event_ids
+                ]
+            source_ids = [
+                value
+                for value in dict.fromkeys(item.source_ids)
+                if value in valid_source_ids
+            ]
+            if not source_ids:
+                source_ids = [
+                    value
+                    for grouped_beat in (default_beats or [beat])
+                    for value in grouped_beat.get("source_ids", [])
+                    if value in valid_source_ids
+                ]
+            beat_changes = item.beat_changes or [
+                f"第一拍：主体已经处于“{entry_state}”的可见状态",
+                "第二拍：新信息使当前策略失效，手上事务或视线出现明确中断",
+                f"第三拍：以“{exit_state}”的身体状态结束",
+            ]
+            narration = self._fit_script_text(item.narration, script, end - start)
+            spoken_limit = max(8, math.floor((end - start) * 4.5))
+            remaining_dialogue_chars = max(
+                0, spoken_limit - self._spoken_char_count(narration)
+            )
+            dialogue = self._fit_script_text(
+                item.dialogue,
+                script,
+                end - start,
+                max_chars=remaining_dialogue_chars,
+            )
+            active_character_ids = [
+                value
+                for value in dict.fromkeys(item.active_character_ids)
+                if value in valid_character_ids
+            ]
+            visual_brief = self._remove_shot_labels(item.visual_brief).strip()
+            narrative_function = item.narrative_function or beat.get(
+                "narrative_function", "叙事推进"
+            )
+            cut_motivation = item.cut_motivation or (
+                "动作中断形成切点" if index % 2 == 0 else "视线落点形成切点"
+            )
+            internal_shots = self._normalize_internal_shots(
+                item,
+                unit_id=f"shot_{index + 1:02d}",
+                unit_duration=end - start,
+                unit_index=index,
+                unit_count=target_unit_count,
+                visual_brief=visual_brief,
+                has_characters=bool(active_character_ids),
+                beat_changes=beat_changes,
+                entry_state=entry_state,
+                exit_state=exit_state,
+                cut_motivation=cut_motivation,
+                intensity=intensity,
+                narrative_function=narrative_function,
+            )
             normalized.append(
                 ShotPlanDraft(
                     shot_id=f"shot_{index + 1:02d}",
                     title=self._remove_shot_labels(item.title).strip()
-                    or f"镜头 {index + 1}",
+                    or f"生成单元 {index + 1}",
                     start_second=start,
                     end_second=end,
-                    narration=self._exact_script_text(item.narration, script),
-                    dialogue=self._exact_script_text(item.dialogue, script),
-                    visual_brief=self._remove_shot_labels(item.visual_brief).strip(),
-                    active_character_ids=[
-                        value
-                        for value in dict.fromkeys(item.active_character_ids)
-                        if value in valid_character_ids
-                    ],
-                    event_ids=[
-                        value
-                        for value in dict.fromkeys(item.event_ids)
-                        if value in valid_event_ids
-                    ],
-                    source_ids=[
-                        value
-                        for value in dict.fromkeys(item.source_ids)
-                        if value in valid_source_ids
-                    ],
+                    narration=narration,
+                    dialogue=dialogue,
+                    visual_brief=visual_brief,
+                    active_character_ids=active_character_ids,
+                    event_ids=event_ids,
+                    source_ids=source_ids,
+                    sequence_id=sequence_id,
+                    beat_id=beat_id,
+                    beat_ids=beat_ids,
+                    narrative_function=narrative_function,
+                    objective=item.objective or beat.get("objective", "让当前信息改变局势"),
+                    obstacle=item.obstacle or beat.get("obstacle", "当前策略受到现实阻碍"),
+                    stakes=item.stakes or beat.get("stakes", "失败会让人物处境继续恶化"),
+                    tactic=item.tactic or beat.get("tactic", "先观察，再改变行动策略"),
+                    beat_changes=beat_changes[:4],
+                    entry_state=entry_state,
+                    exit_state=exit_state,
+                    value_before=value_before,
+                    value_after=value_after,
+                    cause_link=item.cause_link
+                    or beat.get("cause_link", "以当前可见变化回应前一问题"),
+                    cut_motivation=cut_motivation,
+                    audio_bridge=item.audio_bridge
+                    or (
+                        "当前环境声在画面结束前先行收紧"
+                        if index % 2 == 0
+                        else "切点后保留半秒动作余音"
+                    ),
+                    intensity=intensity,
+                    format_mode=(
+                        "single_take"
+                        if len(internal_shots) == 1
+                        else "controlled_multishot"
+                    ),
+                    internal_shots=internal_shots,
                 )
             )
         return normalized
+
+    @classmethod
+    def _normalize_internal_shots(
+        cls,
+        item: ShotPlanDraft,
+        *,
+        unit_id: str,
+        unit_duration: int,
+        unit_index: int,
+        unit_count: int,
+        visual_brief: str,
+        has_characters: bool,
+        beat_changes: list[str],
+        entry_state: str,
+        exit_state: str,
+        cut_motivation: str,
+        intensity: int,
+        narrative_function: str,
+    ) -> list[InternalShotData]:
+        requested = item.internal_shots[:3]
+        count = len(requested) or cls._target_internal_shot_count(
+            unit_index, unit_count, intensity, narrative_function
+        )
+        windows = cls._internal_shot_windows(
+            unit_duration,
+            count,
+            hold_ending=unit_index == unit_count - 1,
+        )
+        sizes = (
+            (["MS"] if has_characters else ["WS"])
+            if count == 1
+            else (
+                (["WS", "CU"] if has_characters else ["WS", "INSERT"])
+                if count == 2
+                else (
+                    ["WS", "MS", "CU"]
+                    if has_characters
+                    else ["WS", "MS", "INSERT"]
+                )
+            )
+        )
+        fovs = {
+            "EWS": 107,
+            "WS": 84,
+            "MS": 47,
+            "MCU": 29,
+            "CU": 18,
+            "ECU": 12,
+            "INSERT": 18,
+        }
+        coverage = (
+            ["让动作和反应在同一长镜头内完成"]
+            if count == 1
+            else (
+                ["建立空间与正在发生的动作", "让结果落在人物反应或关键物件上"]
+                if count == 2
+                else [
+                    "建立空间与正在发生的动作",
+                    "阻碍进入并迫使当前策略改变",
+                    "让结果落在人物反应或关键物件上",
+                ]
+            )
+        )
+        normalized: list[InternalShotData] = []
+        carried_state = entry_state
+        for internal_index, (start_offset, end_offset) in enumerate(windows):
+            source = requested[internal_index] if internal_index < len(requested) else None
+            is_last = internal_index == count - 1
+            default_change = beat_changes[min(internal_index, len(beat_changes) - 1)]
+            internal_exit = (
+                exit_state
+                if is_last
+                else (
+                    source.exit_state
+                    if source and source.exit_state
+                    else default_change
+                )
+            )
+            size = source.shot_size if source else sizes[internal_index]
+            fov = source.fov_degrees if source else fovs[size]
+            normalized.append(
+                InternalShotData(
+                    internal_shot_id=f"{unit_id}_{chr(97 + internal_index)}",
+                    start_offset_seconds=start_offset,
+                    end_offset_seconds=end_offset,
+                    shot_size=size,
+                    fov_degrees=fov,
+                    visual_action=(
+                        source.visual_action
+                        if source
+                        else f"{visual_brief}；{coverage[internal_index]}；{default_change}"
+                    ),
+                    camera=(
+                        source.camera
+                        if source and source.camera
+                        else cls._default_internal_camera(size, fov, has_characters)
+                    ),
+                    performance=(
+                        source.performance
+                        if source and source.performance
+                        else (
+                            f"可见变化：{default_change}；反应先于语言，眼神先于头部移动。"
+                            if has_characters
+                            else "物件或环境状态以明确物理原因发生可见变化。"
+                        )
+                    ),
+                    entry_state=carried_state,
+                    exit_state=internal_exit,
+                    cut_in=(
+                        "START"
+                        if internal_index == 0
+                        else (
+                            source.cut_in
+                            if source and source.cut_in != "START"
+                            else "HARD CUT"
+                        )
+                    ),
+                    cut_motivation=(
+                        source.cut_motivation
+                        if source and source.cut_motivation
+                        else cut_motivation
+                    ),
+                    intensity=max(
+                        0,
+                        min(100, (source.intensity if source else intensity) + internal_index * 3),
+                    ),
+                )
+            )
+            carried_state = internal_exit
+        return normalized
+
+    @staticmethod
+    def _default_internal_camera(
+        shot_size: str, fov_degrees: int, has_characters: bool
+    ) -> str:
+        if shot_size in {"CU", "ECU"}:
+            return (
+                f"{fov_degrees}°视野，摄影机保持在人物视线轴同侧，"
+                "焦点落在双眼与动作后的微反应。"
+            )
+        if shot_size == "INSERT":
+            return (
+                f"{fov_degrees}°视野，独立插入机位只记录当前关键物件的可见状态变化。"
+            )
+        subject = "人物与环境关系" if has_characters else "环境主体与关键物件"
+        return f"{fov_degrees}°视野，摄影机稳定记录{subject}，只执行一次有动机的运动。"
+
+    @staticmethod
+    def _target_internal_shot_count(
+        index: int, count: int, intensity: int, narrative_function: str
+    ) -> int:
+        if count <= 1 or index == count - 1:
+            return 1
+        if index == 0:
+            return 2
+        position = index / max(1, count - 1)
+        if (
+            index % 2 == 1
+            or 0.62 <= position <= 0.86
+            or intensity >= 75
+            or any(marker in narrative_function for marker in ("转折", "高潮", "代价"))
+        ):
+            return 3
+        return 2
+
+    @staticmethod
+    def _internal_shot_windows(
+        duration: int, count: int, *, hold_ending: bool = False
+    ) -> list[tuple[int, int]]:
+        if count < 1 or count > 3 or duration < count:
+            raise ValueError("内部镜头数量无法覆盖当前生成单元")
+        if count == 1:
+            return [(0, duration)]
+        if count == 2:
+            split = round(duration * (0.6 if hold_ending else 0.4))
+            split = max(1, min(duration - 1, split))
+            return [(0, split), (split, duration)]
+        first = max(1, min(duration - 2, round(duration * 0.3)))
+        second = max(first + 1, min(duration - 1, round(duration * 0.7)))
+        return [(0, first), (first, second), (second, duration)]
 
     def _fallback_shot_plan(
         self,
@@ -509,20 +927,27 @@ class ProductionPackageBuilder:
         characters: list[CharacterAssetData],
         duration: int,
         context: dict | None = None,
+        target_count: int | None = None,
     ) -> list[ShotPlanDraft]:
-        target_count = max(1, min(18, math.ceil(duration / 10)))
+        target_count = target_count or self._target_generation_unit_count(duration)
+        unit_windows = self._generation_unit_windows(duration, target_count)
         segments = self._script_segments(script)
+        narration_chunk_chars = max(10, math.floor(duration / target_count * 4.2))
         narration_queues = {
-            item["start_second"]: self._narration_chunks(item.get("narration", ""))
+            item["start_second"]: self._narration_chunks(
+                item.get("narration", ""), narration_chunk_chars
+            )
             for item in segments
         }
         event_fact_ids = {
             item.get("id", ""): set(item.get("fact_ids", []))
             for item in (context or {}).get("events", [])
         }
+        beats = (context or {}).get("story_arc", {}).get("beats", [])
+        shots_per_beat: dict[str, int] = {}
         plans: list[ShotPlanDraft] = []
         for index in range(target_count):
-            start, end = self._shot_window(index, duration, target_count)
+            start, end = unit_windows[index]
             midpoint = (start + end) / 2
             segment = next(
                 (
@@ -541,20 +966,70 @@ class ProductionPackageBuilder:
                 if fact_ids.intersection(character.source_fact_ids)
             ]
             narration_queue = narration_queues.get(segment.get("start_second", -1), [])
+            beat_index = min(
+                len(beats) - 1, (index * len(beats)) // target_count
+            ) if beats else 0
+            beat = beats[beat_index] if beats else {}
+            beat_id = beat.get("beat_id", f"beat_{beat_index + 1:02d}")
+            within_beat = shots_per_beat.get(beat_id, 0)
+            shots_per_beat[beat_id] = within_beat + 1
+            coverage = ("空间与物件", "人物行动", "反应与结果")[within_beat % 3]
+            beat_event_ids = [
+                event_id
+                for event_id in beat.get("event_ids", [])
+                if event_id
+            ]
+            beat_source_ids = [
+                source_id
+                for source_id in beat.get("source_ids", [])
+                if source_id
+            ]
+            visual_action = beat.get("visual_action") or segment.get(
+                "visual_brief", "与已核验内容对应的克制纪实画面"
+            )
             plans.append(
                 ShotPlanDraft(
                     shot_id=f"shot_{index + 1:02d}",
-                    title=segment.get("visual_brief", "纪录片资料画面")[:120]
-                    or "纪录片资料画面",
+                    title=(
+                        f"生成单元 {index + 1} · "
+                        f"{beat.get('narrative_function', '叙事推进')}"
+                    )[:120],
                     start_second=start,
                     end_second=end,
                     narration=narration_queue.pop(0) if narration_queue else "",
                     dialogue="",
-                    visual_brief=segment.get("visual_brief", "与已核验内容对应的克制纪实画面")
-                    or "与已核验内容对应的克制纪实画面",
+                    visual_brief=(
+                        f"{visual_action}；当前 10 秒生成单元围绕同一地点、同一时间和同一动作链，"
+                        f"通过“空间建立—{coverage}—结果落点”形成局部小弧线。"
+                    ),
                     active_character_ids=active,
-                    event_ids=segment.get("event_ids", []),
-                    source_ids=segment.get("source_ids", []),
+                    event_ids=beat_event_ids or segment.get("event_ids", []),
+                    source_ids=beat_source_ids or segment.get("source_ids", []),
+                    sequence_id=f"sequence_{beat_index + 1:02d}",
+                    beat_id=beat_id,
+                    narrative_function=beat.get("narrative_function", "叙事推进"),
+                    objective=beat.get("objective", "让当前事实改变局势"),
+                    obstacle=beat.get("obstacle", "当前策略受到阻碍"),
+                    stakes=beat.get("stakes", "失败会改变人物处境"),
+                    tactic=beat.get("tactic", "改变观察或行动策略"),
+                    beat_changes=[
+                        f"主体以“{beat.get('value_before', '当前状态')}”进入",
+                        "信息到达，动作或视线出现中断",
+                        f"主体以“{beat.get('value_after', '改变后的状态')}”离开",
+                    ],
+                    entry_state=beat.get("value_before", "当前局势清楚可读"),
+                    exit_state=beat.get("value_after", "当前信息已改变局势"),
+                    value_before=beat.get("value_before", ""),
+                    value_after=beat.get("value_after", ""),
+                    cause_link=beat.get(
+                        "cause_link", "以编辑承接推进，不新增事实因果"
+                    ),
+                    cut_motivation=("动作中断形成切点" if index % 2 == 0 else "视线落点形成切点"),
+                    audio_bridge=("环境声提前半秒收紧" if index % 2 == 0 else "保留半秒动作余音"),
+                    intensity=max(
+                        0,
+                        min(100, int(beat.get("intensity", 50)) + (within_beat - 1) * 4),
+                    ),
                 )
             )
         return plans
@@ -568,17 +1043,40 @@ class ProductionPackageBuilder:
         style_bible: str,
         characters: list[CharacterAssetData],
         shot_plan: list[ShotPlanDraft],
+        audio_plan: GlobalAudioPlanData,
         *,
+        allow_ai: bool = True,
         step_prefix: str = "production:shots",
         previous_prompts: dict[str, str] | None = None,
         previous_ambient: dict[str, str] | None = None,
     ) -> list[CinematicShotData]:
         by_id = {item.id: item for item in characters}
         generated: dict[str, tuple[str, str]] = {}
-        skill_ready = {
+        skill_ready = allow_ai and {
             "acting-ai-video",
             "cinedance-higgsfield",
         }.issubset(self.skill_sources)
+        continuity_by_id: dict[str, dict] = {}
+        for index, shot in enumerate(shot_plan):
+            previous = shot_plan[index - 1] if index else None
+            following = shot_plan[index + 1] if index + 1 < len(shot_plan) else None
+            continuity_by_id[shot.shot_id] = {
+                "current_entry_state_to_render": shot.entry_state,
+                "current_exit_state_to_leave": shot.exit_state,
+                "inherited_exit_state": previous.exit_state if previous else shot.entry_state,
+                "current_sequence_id": shot.sequence_id,
+                "current_beat_id": shot.beat_id,
+                "cut_motivation": shot.cut_motivation,
+                "audio_bridge": shot.audio_bridge,
+                "following_entry_target": following.entry_state if following else "片尾收束",
+                "internal_shots": [
+                    item.model_dump(mode="json") for item in shot.internal_shots
+                ],
+                "rule": (
+                    "最终提示词只重述当前 10 秒生成单元状态；内部镜头按明确时间点切换，"
+                    "跨切保持身份、空间、视线、道具、光线和动作连续。"
+                ),
+            }
         batch_requests: list[tuple[int, list[ShotPlanDraft], str]] = []
         for offset in range(0, len(shot_plan), 4):
             chunk = shot_plan[offset : offset + 4]
@@ -602,7 +1100,9 @@ class ProductionPackageBuilder:
                     )
                 else:
                     prompt_item = item
-                prompt_shots.append(prompt_item.model_dump(mode="json"))
+                prompt_payload = prompt_item.model_dump(mode="json")
+                prompt_payload["continuity_ledger"] = continuity_by_id[item.shot_id]
+                prompt_shots.append(prompt_payload)
                 if previous_body:
                     prompt_previous[item.shot_id] = self._ensure_display_geometry(
                         previous_body, item
@@ -619,6 +1119,13 @@ class ProductionPackageBuilder:
                     ]
                 ),
                 shots=stable_json(prompt_shots),
+                continuity_ledger=stable_json(
+                    {
+                        item.shot_id: continuity_by_id[item.shot_id]
+                        for item in chunk
+                    }
+                ),
+                audio_plan=stable_json(audio_plan.model_dump(mode="json")),
                 previous_prompts=stable_json(prompt_previous),
                 acting_skill=self.skill_sources["acting-ai-video"].content,
                 cinedance_skill=self.skill_sources["cinedance-higgsfield"].content,
@@ -654,7 +1161,7 @@ class ProductionPackageBuilder:
                     expected_ids = {item.shot_id for item in chunk}
                     returned_ids = {item.shot_id for item in result.shots}
                     if returned_ids != expected_ids:
-                        raise ValueError("逐镜头提示词返回数量或 ID 不完整")
+                        raise ValueError("生成单元提示词返回数量或 ID 不完整")
                     return batch_number, chunk, result, None
                 except Exception as error:
                     return batch_number, chunk, None, error
@@ -663,14 +1170,21 @@ class ProductionPackageBuilder:
             *(generate_batch(*request) for request in batch_requests)
         )
         for batch_number, _chunk, result, error in outcomes:
-            stage = f"逐镜头提示词第 {batch_number} 批"
+            stage = f"生成单元提示词第 {batch_number} 批"
             if error is not None or result is None:
                 self._record_ai_failure(stage, error or RuntimeError("未知错误"))
                 continue
             try:
                 lossless_failures: list[str] = []
+                control_failures: list[str] = []
                 for item in result.shots:
                     candidate = item.prompt_body_template.strip()
+                    plan = next(
+                        plan_item for plan_item in _chunk if plan_item.shot_id == item.shot_id
+                    )
+                    if not self._prompt_control_complete(candidate, plan):
+                        control_failures.append(item.shot_id)
+                        continue
                     previous_body = (previous_prompts or {}).get(item.shot_id, "")
                     if previous_body and not self._is_lossless_rewrite(
                         previous_body, candidate
@@ -689,6 +1203,14 @@ class ProductionPackageBuilder:
                     self._record_ai_failure(
                         stage,
                         ValueError("输出未通过无损保留校验，已保留原提示词"),
+                    )
+                elif control_failures:
+                    self._record_ai_failure(
+                        stage,
+                        ValueError(
+                            "输出缺少连续性、单机位、动作时间轴或表演控制："
+                            + "、".join(control_failures)
+                        ),
                     )
                 else:
                     self.ai_successes += 1
@@ -735,6 +1257,7 @@ class ProductionPackageBuilder:
                 plan.narration,
                 plan.dialogue,
                 voice_lines if plan.dialogue else [],
+                plan.audio_bridge,
             )
             # 合规改写是最后一步：无损检查已经跑完，这里只换风险词面，
             # 不删控制信息，也不碰 Acting SKILL 要求的表演结构。
@@ -767,23 +1290,80 @@ class ProductionPackageBuilder:
                     f"[[{character.reference_token}]]：{character.visual_anchor}，{character.wardrobe_anchor}。"
                 )
         subject = "；".join(character_lines) or "画面所需的资料主体在第一帧已经清晰可见。"
-        lens = (
-            "29°短长焦人物镜头，摄影机距人物约 5 米，人物清晰，背景轻度压缩并柔和虚化"
-            if character_lines
-            else "47°自然标准镜头，摄影机距主体约 4 米，透视接近人眼，环境关系清楚"
+        internal_shots = plan.internal_shots or self._normalize_internal_shots(
+            plan,
+            unit_id=plan.shot_id,
+            unit_duration=plan.end_second - plan.start_second,
+            unit_index=0,
+            unit_count=1,
+            visual_brief=plan.visual_brief,
+            has_characters=bool(character_lines),
+            beat_changes=plan.beat_changes or [plan.entry_state, plan.exit_state],
+            entry_state=plan.entry_state,
+            exit_state=plan.exit_state,
+            cut_motivation=plan.cut_motivation,
+            intensity=plan.intensity,
+            narrative_function=plan.narrative_function,
         )
+        format_mode = (
+            "单一连续长镜头；摄影机沿一条明确运动路径完成动作和反应。"
+            if len(internal_shots) == 1
+            else (
+                f"受控多镜头序列，共 {len(internal_shots)} 个内部镜头；"
+                "切镜只发生在动作时间轴指定的 HARD CUT、MATCH CUT 或 INSERT CUT 点，"
+                "每个内部镜头保持单一机位和单一光学特征。"
+            )
+        )
+        optics = []
+        cameras = []
+        timeline = []
+        for index, internal in enumerate(internal_shots):
+            label = chr(65 + index)
+            if index:
+                timeline.append(
+                    f"0:{internal.start_offset_seconds:02d} {internal.cut_in}，"
+                    f"切点由{internal.cut_motivation}触发。"
+                )
+            optics.append(
+                f"内部镜头 {label}：{internal.shot_size}，"
+                f"{internal.fov_degrees}°视野，段内光学特征不漂移。"
+            )
+            cameras.append(f"内部镜头 {label}：{internal.camera}")
+            timeline.append(
+                f"0:{internal.start_offset_seconds:02d} 至 "
+                f"0:{internal.end_offset_seconds:02d}，{internal.visual_action}；"
+                f"入口状态“{internal.entry_state}”，出口状态“{internal.exit_state}”；"
+                f"{internal.performance}"
+            )
+        performance = (
+            f"目标：{plan.objective}。阻碍：{plan.obstacle}。失败代价：{plan.stakes}。"
+            f"当前策略：{plan.tactic}。人物用手上事务承载行为，信息落下时动作中断；"
+            "眼神先于头部到达目标，持续自然微扫视、真实眨眼与呼吸，反应先于语言完成。"
+            if character_lines
+            else (
+                "当前生成单元没有人物表演；环境主体或资料物件以可见状态变化承载节拍，"
+                "变化必须有明确物理原因与结果。"
+            )
+        )
+        optics_text = " ".join(optics)
+        cameras_text = " ".join(cameras)
+        timeline_text = "\n".join(timeline)
         return (
             f"场景上下文\n{plan.visual_brief}\n\n"
+            f"连续性状态\n当前生成单元第一帧已经处于“{plan.entry_state}”；"
+            f"结束时留下“{plan.exit_state}”。价值从“{plan.value_before}”变为“{plan.value_after}”。"
+            "所有内部切镜保持同一角色身份、地点地理、画面方向、视线、服装、道具手位、"
+            "物件状态和主光方向，动作与情绪沿时间轴继续推进。\n\n"
             f"首帧与空间调度\n{subject}主体位于画面三分线，空间关系从第一帧即可读懂，动作已处于可见状态。\n\n"
-            f"光学\n{lens}，稳定保持同一光学特征。\n\n"
-            "摄影机\n摄影机保持在主体动作可读的一侧，只执行一次缓慢、有人体重量感的微推进；焦点跟随主要动作。\n\n"
-            "动作时间轴\n"
-            f"0:00 至 0:{plan.end_second - plan.start_second:02d}，"
-            "人物以真实重心和克制反应完成当前唯一动作；"
-            "眼神先于头部到达目标，眨眼和呼吸持续自然，手中事务在信息落下时短暂停住。\n\n"
+            f"格式模式\n{format_mode}\n\n"
+            f"光学\n{optics_text}\n\n"
+            f"摄影机\n{cameras_text}\n\n"
+            f"动作时间轴\n{timeline_text}\n\n"
+            f"表演\n{performance}\n\n"
             "物理\n脚掌有真实落地、重心转移和摩擦，衣料与头发存在轻微惯性延迟，物件具有明确质量。\n\n"
             f"灯光\n{style_bible}\n\n"
-            "正向约束\n身份、造型、站位、视线和道具状态保持稳定，画面清晰自然。"
+            "正向约束\n身份、造型、站位、视线、道具、屏幕方向和灯光在内部切镜中保持稳定；"
+            "切镜只发生在指定时间点，画面清晰自然。"
         )
 
     def _attach_audio(
@@ -793,6 +1373,7 @@ class ProductionPackageBuilder:
         narration: str,
         dialogue: str,
         voice_lines: list[str],
+        audio_bridge: str = "",
     ) -> str:
         lines = [
             body.strip(),
@@ -805,6 +1386,8 @@ class ProductionPackageBuilder:
         if dialogue:
             lines.append(f"对白逐字：\"{dialogue}\"")
             lines.extend(voice_lines)
+        if audio_bridge:
+            lines.append(f"声音切点：{audio_bridge}")
         lines.append("除上述内容外无额外人声，无字幕。")
         return "\n".join(lines).strip()
 
@@ -828,13 +1411,213 @@ class ProductionPackageBuilder:
         return segments
 
     @staticmethod
-    def _shot_window(index: int, duration: int, count: int) -> tuple[int, int]:
-        start = (index * duration) // count
-        end = ((index + 1) * duration) // count
-        return start, end
+    def _generation_unit_windows(
+        duration: int, count: int
+    ) -> list[tuple[int, int]]:
+        expected = math.ceil(duration / 10)
+        if count != expected:
+            raise ValueError("生成单元数量必须与每 10 秒一次生成相匹配")
+        return [
+            (index * 10, min(duration, (index + 1) * 10))
+            for index in range(count)
+        ]
 
     @staticmethod
-    def _narration_chunks(text: str, max_chars: int = 42) -> list[str]:
+    def _normalize_audio_plan(
+        draft: GlobalAudioPlanData,
+        shots: list[ShotPlanDraft],
+        duration: int,
+    ) -> GlobalAudioPlanData:
+        cues = [
+            cue.model_copy(update={"end_second": min(cue.end_second, duration)})
+            for cue in draft.cues
+            if cue.start_second < duration and min(cue.end_second, duration) > cue.start_second
+        ]
+        silence_points = sorted(
+            {point for point in draft.silence_points if 0 <= point < duration}
+        )
+        if draft.score_arc.strip() and len(cues) >= 3:
+            return draft.model_copy(
+                update={"cues": cues, "silence_points": silence_points}
+            )
+
+        peak = max(shots, key=lambda shot: shot.intensity)
+        opening_end = max(1, round(duration * 0.18))
+        escalation_end = max(opening_end + 1, round(duration * 0.58))
+        aftermath_start = min(duration - 1, max(escalation_end + 1, round(duration * 0.80)))
+        silence_start = min(duration - 1, max(0, peak.start_second))
+        silence_end = min(duration, silence_start + 2)
+        return GlobalAudioPlanData(
+            score_arc=(
+                "开场只保留低频脉冲与现场声，人物线建立后加入克制动机；"
+                "升级段逐步收紧节奏，转折点抽空配乐形成短暂静默，"
+                "结尾只回收一个未解决音型，不做煽情抬升。"
+            ),
+            music_rule="配乐不解释情绪；关键动作、转折与结尾优先让位给同期声和静默。",
+            silence_points=[silence_start],
+            cues=[
+                AudioCueData(
+                    start_second=0,
+                    end_second=opening_end,
+                    layer="score",
+                    description="低频单音脉冲，旋律不进入，保留环境声的真实空间。",
+                ),
+                AudioCueData(
+                    start_second=opening_end,
+                    end_second=escalation_end,
+                    layer="score",
+                    description="一个克制的两音动机缓慢重复，随节拍升级增加质感而不增加音量。",
+                ),
+                AudioCueData(
+                    start_second=silence_start,
+                    end_second=silence_end,
+                    layer="silence",
+                    description="转折动作落下时抽空配乐，只保留呼吸、物件接触或房间底噪。",
+                ),
+                AudioCueData(
+                    start_second=aftermath_start,
+                    end_second=duration,
+                    layer="score",
+                    description="回收开场音型但保持未解决，不抬升、不总结，让环境余音完成结尾。",
+                ),
+                AudioCueData(
+                    start_second=0,
+                    end_second=duration,
+                    layer="ambient_bridge",
+                    description=(
+                        "相邻镜头使用 J-cut 或 L-cut 衔接；"
+                        "动作余音和环境声承担大部分切点。"
+                    ),
+                ),
+            ],
+        )
+
+    @classmethod
+    def _check_animatic(
+        cls, shots: list[ShotPlanDraft], duration: int
+    ) -> AnimaticCheckData:
+        issues: list[str] = []
+        severe = False
+        cursor = 0
+        internal_durations: list[int] = []
+        internal_intensities: list[int] = []
+        internal_counts: list[int] = []
+        for index, shot in enumerate(shots):
+            unit_duration = shot.end_second - shot.start_second
+            if shot.start_second != cursor:
+                issues.append(f"生成单元 {index + 1} 与前一单元不连续")
+                severe = True
+            cursor = shot.end_second
+            if unit_duration > 10:
+                issues.append(f"生成单元 {index + 1} 超过 10 秒")
+                severe = True
+            if not all(
+                (
+                    shot.sequence_id,
+                    shot.beat_id,
+                    shot.narrative_function,
+                    shot.entry_state,
+                    shot.exit_state,
+                    shot.cut_motivation,
+                    shot.audio_bridge,
+                )
+            ):
+                issues.append(f"生成单元 {index + 1} 的连续性账本不完整")
+            spoken = cls._spoken_char_count(f"{shot.narration}{shot.dialogue}")
+            if spoken > max(8, math.floor(unit_duration * 4.5)):
+                issues.append(f"生成单元 {index + 1} 的口播无法在时长内自然完成")
+
+            internal_counts.append(len(shot.internal_shots))
+            if not shot.internal_shots:
+                issues.append(f"生成单元 {index + 1} 缺少内部镜头设计")
+                severe = True
+                continue
+            if shot.format_mode == "single_take" and len(shot.internal_shots) != 1:
+                issues.append(f"生成单元 {index + 1} 的长镜头模式与内部镜头数冲突")
+                severe = True
+            if shot.format_mode == "controlled_multishot" and len(shot.internal_shots) < 2:
+                issues.append(f"生成单元 {index + 1} 的多镜头模式缺少切镜")
+                severe = True
+
+            internal_cursor = 0
+            carried_state = shot.entry_state
+            for internal_index, internal in enumerate(shot.internal_shots):
+                if internal.start_offset_seconds != internal_cursor:
+                    issues.append(
+                        f"生成单元 {index + 1} 的内部镜头时间轴存在空隙或重叠"
+                    )
+                    severe = True
+                if internal.entry_state != carried_state:
+                    issues.append(
+                        f"生成单元 {index + 1} 的内部镜头状态没有连续承接"
+                    )
+                if internal_index == 0 and internal.cut_in != "START":
+                    issues.append(f"生成单元 {index + 1} 的首个内部镜头切入类型错误")
+                if internal_index > 0 and internal.cut_in == "START":
+                    issues.append(f"生成单元 {index + 1} 的内部切点未明确")
+                internal_duration = (
+                    internal.end_offset_seconds - internal.start_offset_seconds
+                )
+                internal_durations.append(internal_duration)
+                internal_intensities.append(internal.intensity)
+                internal_cursor = internal.end_offset_seconds
+                carried_state = internal.exit_state
+            if internal_cursor != unit_duration:
+                issues.append(f"生成单元 {index + 1} 的内部镜头没有覆盖完整时长")
+                severe = True
+            if carried_state != shot.exit_state:
+                issues.append(f"生成单元 {index + 1} 的内部镜头没有落到出口状态")
+        if cursor != duration:
+            issues.append(f"生成单元总时长 {cursor} 秒，没有覆盖目标 {duration} 秒")
+            severe = True
+        if len(shots) != cls._target_generation_unit_count(duration):
+            issues.append("实际生成次数没有保持每 10 秒一次")
+            severe = True
+        if shots and all(count == 1 for count in internal_counts):
+            issues.append("所有生成单元都只有一个画面，电影覆盖不足")
+        if len(shots) >= 3 and not any(count == 3 for count in internal_counts):
+            issues.append("全片缺少三镜头加速段")
+        if len(shots) >= 3 and not any(count == 1 for count in internal_counts):
+            issues.append("全片缺少用于情绪停留的长镜头单元")
+        if len(set(internal_durations)) < min(3, len(internal_durations)):
+            issues.append("内部镜头时长过于整齐，节奏仍然平直")
+        if len(set(internal_intensities)) < min(4, len(internal_intensities)):
+            issues.append("内部镜头强度曲线档位不足")
+        for index in range(2, len(shots)):
+            if (
+                shots[index].visual_brief == shots[index - 1].visual_brief
+                == shots[index - 2].visual_brief
+            ):
+                issues.append(
+                    f"生成单元 {index - 1}—{index + 1} 连续重复同一画面任务"
+                )
+                break
+        score = max(0, 100 - 12 * len(issues))
+        internal_count = sum(internal_counts)
+        return AnimaticCheckData(
+            passed=score >= 85 and not severe,
+            score=score,
+            generation_unit_count=len(shots),
+            internal_shot_count=internal_count,
+            shot_count=internal_count,
+            sequence_count=len({shot.sequence_id for shot in shots}),
+            total_duration_seconds=cursor,
+            average_shot_duration_seconds=(
+                round(sum(internal_durations) / len(internal_durations), 2)
+                if internal_durations
+                else 0
+            ),
+            average_internal_shot_duration_seconds=(
+                round(sum(internal_durations) / len(internal_durations), 2)
+                if internal_durations
+                else 0
+            ),
+            rhythm_curve=internal_intensities,
+            issues=issues,
+        )
+
+    @staticmethod
+    def _narration_chunks(text: str, max_chars: int = 20) -> list[str]:
         sentences = [
             match.group(0).strip()
             for match in re.finditer(r"[^。！？!?；;\n]+[。！？!?；;]?", text)
@@ -852,12 +1635,9 @@ class ProductionPackageBuilder:
                 if current and len(current) + len(clause) > max_chars:
                     chunks.append(current)
                     current = ""
-                while len(clause) > max_chars:
-                    if current:
-                        chunks.append(current)
-                        current = ""
-                    chunks.append(clause[:max_chars])
-                    clause = clause[max_chars:]
+                if len(clause) > max_chars:
+                    chunks.append(clause)
+                    continue
                 current += clause
             if current:
                 chunks.append(current)
@@ -869,6 +1649,40 @@ class ProductionPackageBuilder:
             rf"(?ms)^###\s*{re.escape(heading)}\s*$\n(.*?)(?=^###\s|\Z)", body
         )
         return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def _spoken_char_count(value: str) -> int:
+        return len(re.sub(r"[\s，。！？、；：,.!?;:\"“”'（）()—–-]", "", value))
+
+    @classmethod
+    def _fit_script_text(
+        cls,
+        value: str,
+        script: str,
+        duration: int,
+        *,
+        max_chars: int | None = None,
+    ) -> str:
+        candidate = value.strip()
+        if not candidate or candidate not in script:
+            return ""
+        limit = max_chars if max_chars is not None else max(8, math.floor(duration * 4.5))
+        if limit <= 0:
+            return ""
+        if cls._spoken_char_count(candidate) <= limit:
+            return candidate
+        parts = [
+            match.group(0).strip()
+            for match in re.finditer(r"[^，,。！？!?；;]+[，,。！？!?；;]?", candidate)
+            if match.group(0).strip()
+        ]
+        fitted = ""
+        for part in parts:
+            joined = f"{fitted}{part}"
+            if cls._spoken_char_count(joined) > limit:
+                break
+            fitted = joined
+        return fitted if fitted and fitted in script else ""
 
     @staticmethod
     def _exact_script_text(value: str, script: str) -> str:
@@ -1236,6 +2050,49 @@ class ProductionPackageBuilder:
         return re.split(r"\n音频(?:（[^\n]*）)?\s*\n", prompt, maxsplit=1)[0].strip()
 
     @staticmethod
+    def _prompt_control_complete(prompt: str, plan: ShotPlanDraft) -> bool:
+        required = ("连续性状态", "首帧", "格式模式", "动作时间轴", "物理", "灯光")
+        if plan.active_character_ids:
+            required = (*required, "表演")
+        forbidden = (
+            "上一镜头",
+            "下一镜头",
+            "同前",
+            "继续上一",
+            "延续上一",
+        )
+        if not all(marker in prompt for marker in required) or any(
+            marker in prompt for marker in forbidden
+        ):
+            return False
+        internal_count = len(plan.internal_shots)
+        if internal_count <= 1:
+            return bool(
+                ("单一连续" in prompt or "单镜头" in prompt)
+                and not any(cut in prompt for cut in ("HARD CUT", "SMASH CUT"))
+            )
+        cut_count = sum(
+            prompt.count(cut)
+            for cut in (
+                "HARD CUT",
+                "SMASH CUT",
+                "MATCH CUT",
+                "INSERT CUT",
+                "REVERSE CUT",
+                "WHIP CUT",
+            )
+        )
+        time_markers_present = all(
+            f"0:{internal.start_offset_seconds:02d}" in prompt
+            for internal in plan.internal_shots
+        )
+        return bool(
+            ("受控多镜头" in prompt or "多镜头序列" in prompt)
+            and cut_count >= internal_count - 1
+            and time_markers_present
+        )
+
+    @staticmethod
     def _is_lossless_rewrite(previous: str, candidate: str) -> bool:
         if len(candidate) < len(previous) * 0.9:
             return False
@@ -1280,6 +2137,49 @@ class ProductionPackageBuilder:
                 "表演结构与控制信息未改动。"
             )
         return warnings
+
+    @staticmethod
+    def _target_generation_unit_count(duration: int) -> int:
+        """One user-facing generation task per 10-second output clip."""
+        return math.ceil(duration / 10)
+
+    def _record_upstream_fallbacks(self, story: dict, script_meta: dict) -> None:
+        if story.get("generation_mode") == "deterministic_fallback":
+            reason = story.get("generation_note") or "故事模型未返回可用结构"
+            self.warnings.append(f"故事层为确定性保底结构，不能标记为成片就绪：{reason}")
+        if script_meta.get("generation_mode") == "deterministic_fallback":
+            reason = script_meta.get("reason") or "剧本模型未返回可用内容"
+            self.warnings.append(f"剧本层为确定性保底稿，不能标记为成片就绪：{reason}")
+
+    @staticmethod
+    def _build_readiness(
+        *,
+        story: dict,
+        review: dict,
+        script_meta: dict,
+        animatic: AnimaticCheckData,
+        production_mode: str,
+    ) -> ProductionReadinessData:
+        blockers: list[str] = []
+        quality = NarrativeQualityData.model_validate(story.get("quality") or {})
+        if story.get("generation_mode", "legacy") != "ai_generated":
+            blockers.append("故事层不是通过质量门的 AI 版本")
+        if not quality.passed:
+            blockers.append("故事因果节拍质量门未通过")
+        if script_meta.get("generation_mode", "legacy") != "ai_generated":
+            blockers.append("剧本层不是 AI 生成或 AI 修复版本")
+        if not review.get("passed", False):
+            blockers.append("剧本事实与电影叙事审校未通过")
+        if not animatic.passed:
+            blockers.append("节奏样片检查未通过")
+        if production_mode != "ai_optimized":
+            blockers.append("角色或生成单元提示词存在未完成的 AI 优化")
+        blockers = list(dict.fromkeys(blockers))
+        return ProductionReadinessData(
+            passed=not blockers,
+            score=max(0, 100 - 18 * len(blockers)),
+            blockers=blockers,
+        )
 
     def _generation_mode(self) -> str:
         if self.ai_failures == 0:

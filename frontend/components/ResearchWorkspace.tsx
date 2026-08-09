@@ -537,16 +537,27 @@ function Overview({
       {story ? (
         <div className="mt-8 grid gap-4 md:grid-cols-2">
           <div className="rounded-2xl bg-ink p-6 text-paper">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Central theme</p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Central theme</p>
+              {story.quality ? (
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${story.quality.passed ? "bg-verified/20 text-verified" : "bg-pending/20 text-pending"}`}>
+                  故事 {story.quality.score} 分
+                </span>
+              ) : null}
+            </div>
             <h3 className="mt-3 text-[22px] font-semibold leading-8 tracking-[-0.03em]">{story.central_theme}</h3>
             <p className="mt-4 text-sm leading-6 text-ink-3">核心冲突：{story.core_conflict}</p>
+            {story.dramatic_question ? <p className="mt-2 text-sm leading-6 text-ink-3">戏剧问题：{story.dramatic_question}</p> : null}
+            {story.generation_mode === "deterministic_fallback" ? (
+              <p className="mt-3 text-xs leading-5 text-amber-300">当前故事为确定性保底结构，不能进入成片就绪状态。</p>
+            ) : null}
           </div>
           <div className="rounded-2xl bg-paper-2 p-6 ring-1 ring-rule">
             <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Story arc</p>
             <div className="mt-4 flex flex-wrap gap-2">
-              {story.story_arc.map((stage, index) => (
-                <span className="rounded-full bg-card px-3 py-1.5 text-xs font-medium ring-1 ring-rule" key={`${stage.stage}-${index}`}>
-                  {stage.stage}
+              {(story.beats?.length ? story.beats : story.story_arc).map((stage, index) => (
+                <span className="rounded-full bg-card px-3 py-1.5 text-xs font-medium ring-1 ring-rule" key={`${"beat_id" in stage ? stage.beat_id : stage.stage}-${index}`}>
+                  {"narrative_function" in stage ? `${stage.narrative_function} · ${stage.intensity}` : stage.stage}
                 </span>
               ))}
             </div>
@@ -752,7 +763,7 @@ function ScriptView({
               </span>
             ) : null}
           </div>
-          <h2 className="mt-2 text-[30px] font-semibold tracking-[-0.045em]">纪录片式剧本</h2>
+          <h2 className="mt-2 text-[30px] font-semibold tracking-[-0.045em]">人物纪实电影剧本</h2>
         </div>
         <div className="flex flex-wrap gap-2">
           <button className="rounded-xl bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule" onClick={onCopy} type="button">
@@ -782,6 +793,28 @@ function ScriptView({
       {payload.review?.issues.length ? (
         <div className="mt-5 rounded-xl bg-pending/[0.07] p-4 text-xs leading-5 text-amber-800">
           {payload.review.issues.join("；")}
+        </div>
+      ) : null}
+
+      {payload.review ? (
+        <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            ["因果", payload.review.causality_score],
+            ["节奏", payload.review.rhythm_score],
+            ["结尾", payload.review.ending_score],
+            ["口播", payload.review.narration_fit_score],
+          ].map(([label, value]) => (
+            <div className="rounded-xl bg-paper-2 px-3 py-2.5 text-xs" key={String(label)}>
+              <span className="text-ink-3">{label}</span>
+              <span className="ml-2 font-semibold text-ink">{value ?? "—"}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {payload.review?.fallback_used ? (
+        <div className="mt-4 rounded-xl bg-amber-50 p-4 text-xs leading-5 text-amber-800">
+          当前是确定性保底剧本，不会被标记为成片就绪。{payload.review.generation_reason ? ` 原因：${payload.review.generation_reason}` : ""}
         </div>
       ) : null}
 

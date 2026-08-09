@@ -7,7 +7,9 @@ from pydantic import ValidationError
 
 from app.models import Topic
 from app.schemas.domain import (
+    AnimaticCheckData,
     CinematicShotData,
+    InternalShotData,
     ProductionPackageData,
     ShotPlanDraft,
     ShotPromptDraft,
@@ -52,6 +54,96 @@ def test_shot_schema_hard_rejects_more_than_ten_seconds() -> None:
         )
 
 
+def test_ninety_second_plan_keeps_nine_generation_units_with_internal_shots() -> None:
+    assert ProductionPackageBuilder._target_generation_unit_count(60) == 6
+    assert ProductionPackageBuilder._target_generation_unit_count(180) == 18
+    count = ProductionPackageBuilder._target_generation_unit_count(90)
+    windows = ProductionPackageBuilder._generation_unit_windows(90, count)
+    internal_counts = [
+        ProductionPackageBuilder._target_internal_shot_count(
+            index,
+            count,
+            90 if index in {5, 6} else 50,
+            "局势转折" if index == 6 else "压力升级",
+        )
+        for index in range(count)
+    ]
+
+    assert count == 9
+    assert windows[0][0] == 0
+    assert windows[-1][1] == 90
+    assert all(end - start == 10 for start, end in windows)
+    assert internal_counts[0] == 2
+    assert internal_counts[-1] == 1
+    assert 3 in internal_counts
+    assert sum(internal_counts) > count
+
+
+def test_readiness_blocks_upstream_fallback_from_looking_finished() -> None:
+    readiness = ProductionPackageBuilder._build_readiness(
+        story={
+            "generation_mode": "deterministic_fallback",
+            "quality": {"score": 92, "issues": [], "passed": True},
+        },
+        review={"passed": True},
+        script_meta={"generation_mode": "ai_generated"},
+        animatic=AnimaticCheckData(passed=True, score=100),
+        production_mode="ai_optimized",
+    )
+
+    assert readiness.passed is False
+    assert any("故事层" in blocker for blocker in readiness.blockers)
+
+
+def test_narration_chunks_never_cut_through_a_fact_phrase() -> None:
+    narration = "一位年轻人借钱买入杠杆产品，入场后价格快速下跌，生活计划被打乱。"
+
+    chunks = ProductionPackageBuilder._narration_chunks(narration, max_chars=12)
+
+    assert "".join(chunks) == narration
+    assert all(chunk in narration for chunk in chunks)
+    assert not any(chunk.startswith("品，") for chunk in chunks)
+
+
+def test_animatic_gate_rejects_flat_repeated_coverage() -> None:
+    shots = [
+        ShotPlanDraft(
+            shot_id=f"shot_{index + 1:02d}",
+            title=f"重复镜头 {index + 1}",
+            start_second=index * 10,
+            end_second=(index + 1) * 10,
+            visual_brief="人物独处看屏幕并做相同反应",
+            sequence_id="sequence_01",
+            beat_id="beat_01",
+            narrative_function="背景说明",
+            entry_state="坐着看屏幕",
+            exit_state="仍然坐着看屏幕",
+            cut_motivation="时间到点",
+            audio_bridge="环境声不变",
+            intensity=50,
+            format_mode="single_take",
+            internal_shots=[
+                InternalShotData(
+                    internal_shot_id=f"shot_{index + 1:02d}_a",
+                    start_offset_seconds=0,
+                    end_offset_seconds=10,
+                    visual_action="人物独处看屏幕并做相同反应",
+                    entry_state="坐着看屏幕",
+                    exit_state="仍然坐着看屏幕",
+                    intensity=50,
+                )
+            ],
+        )
+        for index in range(9)
+    ]
+
+    animatic = ProductionPackageBuilder._check_animatic(shots, 90)
+
+    assert animatic.passed is False
+    assert any("都只有一个画面" in issue for issue in animatic.issues)
+    assert any("连续重复同一画面任务" in issue for issue in animatic.issues)
+
+
 def test_prompt_schema_does_not_shorten_long_prompt() -> None:
     original = "完整有效控制信息" * 3000
     prompt = ShotPromptDraft(
@@ -82,13 +174,84 @@ def test_lossless_rewrite_rejects_shortened_or_missing_sections() -> None:
 def test_cinematic_prompt_requires_physical_display_facing() -> None:
     prompt = load_prompt("cinematic_shots")
 
+    assert "连续性账本" in prompt
+    assert "连续性状态" in prompt
+    assert "10 秒生成单元" in prompt
+    assert "internal_shots" in prompt
+    assert "受控多镜头序列" in prompt
+    assert "只在指定时间点" in prompt
     assert "设备可见面几何（最高优先级）" in prompt
     assert "人物双眼 → 发光显示面 → 设备机身与背壳 → 摄影机" in prompt
     assert "屏幕内容语义隔离" in prompt
     assert "不得用红/绿/橙光暗示其具体含义" in prompt
     assert "跨逗号、分号和句号检查整篇" in prompt
     assert "推进、特写、对焦和放大只能指向人物双眼与面部反应" in prompt
-    assert "越肩镜头、人物主观镜头或独立 INSERT CUT" in prompt
+    assert "越肩镜头、人物主观镜头或 INSERT CUT" in prompt
+
+
+def test_prompt_control_gate_rejects_pretty_but_incomplete_output() -> None:
+    plan = ShotPlanDraft(
+        shot_id="shot_control",
+        title="人物反应",
+        start_second=0,
+        end_second=4,
+        visual_brief="人物在桌边停住手中的动作",
+        active_character_ids=["char_01"],
+    )
+    incomplete = "场景上下文\n电影感人物特写，光线漂亮，情绪克制。"
+    complete = (
+        "连续性状态\n入口与出口状态明确。\n\n"
+        "首帧与空间调度\n人物第一帧已在桌边。\n\n"
+        "格式模式\n单一连续镜头。\n\n"
+        "动作时间轴\n手中动作停住。\n\n"
+        "表演\n目标、阻碍、策略变化清楚。\n\n"
+        "物理\n物件有重量。\n\n灯光\n单侧方向光。"
+    )
+
+    assert not ProductionPackageBuilder._prompt_control_complete(incomplete, plan)
+    assert ProductionPackageBuilder._prompt_control_complete(complete, plan)
+
+
+def test_prompt_control_gate_requires_all_internal_cuts() -> None:
+    plan = ShotPlanDraft(
+        shot_id="shot_multishot",
+        title="十秒局部叙事弧",
+        start_second=0,
+        end_second=10,
+        visual_brief="同一房间内从行动推进到人物反应",
+        active_character_ids=["char_01"],
+        format_mode="controlled_multishot",
+        internal_shots=[
+            InternalShotData(
+                internal_shot_id="shot_multishot_a",
+                start_offset_seconds=0,
+                end_offset_seconds=4,
+                visual_action="中景建立人物正在整理桌面",
+            ),
+            InternalShotData(
+                internal_shot_id="shot_multishot_b",
+                start_offset_seconds=4,
+                end_offset_seconds=10,
+                visual_action="特写落在人物停住的手和眼神",
+                cut_in="HARD CUT",
+            ),
+        ],
+    )
+    incomplete = (
+        "连续性状态\n入口和出口明确。\n首帧与空间调度\n人物已在桌边。\n"
+        "格式模式\n受控多镜头序列。\n动作时间轴\n0:00 人物整理桌面。\n"
+        "表演\n手部停住。\n物理\n物件有重量。\n灯光\n单侧方向光。"
+    )
+    complete = (
+        "连续性状态\n入口和出口明确。\n首帧与空间调度\n人物已在桌边。\n"
+        "格式模式\n受控多镜头序列。\n动作时间轴\n"
+        "0:00 至 0:04 人物整理桌面。\n0:04 HARD CUT\n"
+        "0:04 至 0:10 人物停住手并抬眼。\n"
+        "表演\n反应先于语言。\n物理\n物件有重量。\n灯光\n单侧方向光。"
+    )
+
+    assert not ProductionPackageBuilder._prompt_control_complete(incomplete, plan)
+    assert ProductionPackageBuilder._prompt_control_complete(complete, plan)
 
 
 def test_display_geometry_guard_hides_screen_in_frontal_reaction_shot() -> None:

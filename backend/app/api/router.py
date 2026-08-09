@@ -378,7 +378,7 @@ async def generate_production_package(
     require_capacity(runner, topic_id)
     runner.pipeline.prepare_production(topic_id)
     start_pipeline(runner, topic_id)
-    return AcceptedResponse(topic_id=topic_id, message="正在生成逐镜头影视包")
+    return AcceptedResponse(topic_id=topic_id, message="正在生成 10 秒多镜头影视包")
 
 
 @router.post(

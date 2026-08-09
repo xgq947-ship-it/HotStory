@@ -25,6 +25,7 @@ ARTIFACT_FILES = {
     "timeline": "timeline.json",
     "story_arc": "story_arc.json",
     "value": "value.json",
+    "script_meta": "script_meta.json",
     "review": "review.json",
     "script": "script.md",
     "production_package": "production_package.json",

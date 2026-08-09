@@ -9,8 +9,9 @@ from app.services.script.writer import normalize_script_format
 def test_review_separates_fact_blockers_from_style_advice() -> None:
     assert review_issue_is_blocking("金额异常，可能为笔误，建议核实")
     assert review_issue_is_blocking("该段没有来源ID，无法核验")
-    assert not review_issue_is_blocking("时间线略有跳跃，可以更清晰")
-    assert not review_issue_is_blocking("结尾略有说教")
+    assert review_issue_is_blocking("时间线略有跳跃，连续性不足")
+    assert review_issue_is_blocking("结尾略有说教")
+    assert not review_issue_is_blocking("可以减少一个装饰性形容词")
 
 
 def test_young_case_score_prefers_explicit_young_adult() -> None:

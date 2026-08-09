@@ -414,11 +414,12 @@ class Pipeline:
             return
         try:
             writer = ScriptWriter(llm, self.store)
-            reviewer = ScriptReviewer(llm)
+            reviewer = ScriptReviewer(llm, self.store)
             script = self.store.load_text(session, topic.id, "script") or ""
             review = await reviewer.review(session, topic, script)
             rewrite_count = 0
-            fallback_used = False
+            script_meta = self.store.load_json(session, topic.id, "script_meta") or {}
+            fallback_used = script_meta.get("generation_mode") == "deterministic_fallback"
             while not review.passed and rewrite_count < 2:
                 try:
                     script = await writer.rewrite(
@@ -439,11 +440,18 @@ class Pipeline:
                 review = await reviewer.review(session, topic, script)
                 rewrite_count += 1
             if not review.passed:
-                script = writer.safe_fallback(session, topic, topic.requested_duration)
+                script = writer.safe_fallback(
+                    session,
+                    topic,
+                    topic.requested_duration,
+                    reason="两轮剧本修复后仍未通过质量门",
+                )
                 self.store.save_text(session, topic.id, "script", script)
                 session.commit()
                 review = await reviewer.review(session, topic, script)
                 fallback_used = True
+            script_meta = self.store.load_json(session, topic.id, "script_meta") or {}
+            fallback_used = script_meta.get("generation_mode") == "deterministic_fallback"
             self.store.save_json(
                 session,
                 topic.id,
@@ -452,6 +460,10 @@ class Pipeline:
                     **review.model_dump(mode="json"),
                     "rewrite_count": rewrite_count,
                     "fallback_used": fallback_used,
+                    "script_generation_mode": script_meta.get(
+                        "generation_mode", "legacy"
+                    ),
+                    "generation_reason": script_meta.get("reason", ""),
                 },
             )
             session.commit()
@@ -560,7 +572,19 @@ class Pipeline:
                 raise LookupError(f"Topic 不存在：{topic_id}")
             if not self.store.load_text(session, topic.id, "script"):
                 raise RuntimeError("剧本尚未生成")
-            self.tracker.reset_from(session, topic, "production")
+            story = self.store.load_json(session, topic.id, "story_arc") or {}
+            quality = story.get("quality") or {}
+            script_meta = self.store.load_json(session, topic.id, "script_meta") or {}
+            if (
+                story.get("generation_mode") != "ai_generated"
+                or not quality.get("passed", False)
+            ):
+                start_step = "story"
+            elif script_meta.get("generation_mode") != "ai_generated":
+                start_step = "write"
+            else:
+                start_step = "production"
+            self.tracker.reset_from(session, topic, start_step)
             return topic
 
 

@@ -120,9 +120,46 @@ class StoryStage(BaseModel):
     event_ids: list[str] = Field(default_factory=list)
 
 
+class NarrativeQualityData(BaseModel):
+    score: int = Field(default=0, ge=0, le=100)
+    issues: list[str] = Field(default_factory=list)
+    passed: bool = False
+
+
+class StoryBeatData(BaseModel):
+    beat_id: str = Field(min_length=3, max_length=40)
+    narrative_function: str = Field(default="", max_length=80)
+    objective: str = Field(default="", max_length=300)
+    obstacle: str = Field(default="", max_length=300)
+    stakes: str = Field(default="", max_length=300)
+    tactic: str = Field(default="", max_length=300)
+    turn: str = Field(default="", max_length=300)
+    value_before: str = Field(default="", max_length=160)
+    value_after: str = Field(default="", max_length=160)
+    cause_link: str = Field(default="", max_length=400)
+    causal_basis: Literal["verified", "editorial_transition"] = "editorial_transition"
+    dramatization_mode: Literal[
+        "verified_observation", "composite_reenactment", "archive_or_data"
+    ] = "archive_or_data"
+    visual_action: str = Field(default="", max_length=500)
+    event_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    intensity: int = Field(default=50, ge=0, le=100)
+
+
 class StoryArcData(BaseModel):
     central_theme: str
     core_conflict: str
+    narrative_mode: Literal["cinematic_human_story", "factual_documentary"] = (
+        "cinematic_human_story"
+    )
+    generation_mode: Literal["ai_generated", "deterministic_fallback"] = "ai_generated"
+    generation_note: str = ""
+    protagonist_event_id: str = ""
+    dramatic_question: str = ""
+    ending_device: str = ""
+    beats: list[StoryBeatData] = Field(default_factory=list, max_length=16)
+    quality: NarrativeQualityData = Field(default_factory=NarrativeQualityData)
     story_arc: list[StoryStage] = Field(default_factory=list)
     selected_events: list[str] = Field(default_factory=list)
     selected_cases: list[str] = Field(default_factory=list)
@@ -140,6 +177,10 @@ class ReviewData(BaseModel):
     score: int = Field(ge=0, le=100)
     issues: list[str] = Field(default_factory=list)
     passed: bool
+    causality_score: int = Field(default=100, ge=0, le=100)
+    rhythm_score: int = Field(default=100, ge=0, le=100)
+    ending_score: int = Field(default=100, ge=0, le=100)
+    narration_fit_score: int = Field(default=100, ge=0, le=100)
 
 
 class CharacterImageSettings(BaseModel):
@@ -176,6 +217,36 @@ class CharacterAssetData(CharacterAssetDraft):
     optimized_by: str = "lira-image-prompts + acting-ai-video"
 
 
+class InternalShotData(BaseModel):
+    internal_shot_id: str = Field(min_length=3, max_length=48)
+    start_offset_seconds: int = Field(ge=0, le=10)
+    end_offset_seconds: int = Field(ge=1, le=10)
+    shot_size: Literal["EWS", "WS", "MS", "MCU", "CU", "ECU", "INSERT"] = "MS"
+    fov_degrees: Literal[8, 12, 18, 29, 47, 63, 84, 107] = 47
+    visual_action: str = Field(min_length=5, max_length=900)
+    camera: str = Field(default="", max_length=600)
+    performance: str = Field(default="", max_length=600)
+    entry_state: str = Field(default="", max_length=400)
+    exit_state: str = Field(default="", max_length=400)
+    cut_in: Literal[
+        "START",
+        "HARD CUT",
+        "SMASH CUT",
+        "MATCH CUT",
+        "INSERT CUT",
+        "REVERSE CUT",
+        "WHIP CUT",
+    ] = "START"
+    cut_motivation: str = Field(default="", max_length=300)
+    intensity: int = Field(default=50, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_internal_window(self) -> InternalShotData:
+        if self.end_offset_seconds <= self.start_offset_seconds:
+            raise ValueError("内部镜头结束时间必须晚于开始时间")
+        return self
+
+
 class ShotPlanDraft(BaseModel):
     shot_id: str = Field(min_length=3, max_length=40)
     title: str = Field(min_length=2, max_length=120)
@@ -187,6 +258,25 @@ class ShotPlanDraft(BaseModel):
     active_character_ids: list[str] = Field(default_factory=list)
     event_ids: list[str] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
+    sequence_id: str = Field(default="sequence_01", max_length=40)
+    beat_id: str = Field(default="", max_length=40)
+    beat_ids: list[str] = Field(default_factory=list, max_length=3)
+    narrative_function: str = Field(default="", max_length=80)
+    objective: str = Field(default="", max_length=300)
+    obstacle: str = Field(default="", max_length=300)
+    stakes: str = Field(default="", max_length=300)
+    tactic: str = Field(default="", max_length=300)
+    beat_changes: list[str] = Field(default_factory=list, max_length=4)
+    entry_state: str = Field(default="", max_length=400)
+    exit_state: str = Field(default="", max_length=400)
+    value_before: str = Field(default="", max_length=160)
+    value_after: str = Field(default="", max_length=160)
+    cause_link: str = Field(default="", max_length=400)
+    cut_motivation: str = Field(default="", max_length=300)
+    audio_bridge: str = Field(default="", max_length=300)
+    intensity: int = Field(default=50, ge=0, le=100)
+    format_mode: Literal["single_take", "controlled_multishot"] = "single_take"
+    internal_shots: list[InternalShotData] = Field(default_factory=list, max_length=3)
 
     @model_validator(mode="after")
     def validate_shot_window(self) -> ShotPlanDraft:
@@ -198,8 +288,29 @@ class ShotPlanDraft(BaseModel):
         return self
 
 
+class AudioCueData(BaseModel):
+    start_second: int = Field(ge=0, le=180)
+    end_second: int = Field(ge=1, le=180)
+    layer: Literal["score", "silence", "ambient_bridge"]
+    description: str = Field(min_length=2, max_length=400)
+
+    @model_validator(mode="after")
+    def validate_audio_window(self) -> AudioCueData:
+        if self.end_second <= self.start_second:
+            raise ValueError("声音段落结束时间必须晚于开始时间")
+        return self
+
+
+class GlobalAudioPlanData(BaseModel):
+    score_arc: str = ""
+    music_rule: str = "配乐只服务叙事张力，不替观众规定情绪。"
+    silence_points: list[int] = Field(default_factory=list)
+    cues: list[AudioCueData] = Field(default_factory=list, max_length=24)
+
+
 class ShotPlanResult(BaseModel):
-    shots: list[ShotPlanDraft] = Field(min_length=1, max_length=18)
+    shots: list[ShotPlanDraft] = Field(min_length=1, max_length=36)
+    audio_plan: GlobalAudioPlanData = Field(default_factory=GlobalAudioPlanData)
 
 
 class ShotPromptDraft(BaseModel):
@@ -229,14 +340,54 @@ class SkillStageData(BaseModel):
     source_sha256: str = ""
 
 
+class AnimaticCheckData(BaseModel):
+    passed: bool = False
+    score: int = Field(default=0, ge=0, le=100)
+    generation_unit_count: int = 0
+    internal_shot_count: int = 0
+    shot_count: int = 0
+    sequence_count: int = 0
+    total_duration_seconds: int = 0
+    average_shot_duration_seconds: float = 0
+    average_internal_shot_duration_seconds: float = 0
+    rhythm_curve: list[int] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
+
+
+class ProductionReadinessData(BaseModel):
+    passed: bool = False
+    score: int = Field(default=0, ge=0, le=100)
+    blockers: list[str] = Field(
+        default_factory=lambda: ["旧版成片包缺少叙事与节奏质量证明"]
+    )
+
+
 class ProductionPackageData(BaseModel):
-    version: str = "1.2"
+    version: str = "2.1"
     topic_id: str
     generated_at: str
     duration_seconds: int
     llm_profile: str = ""
     max_shot_duration_seconds: Literal[10] = 10
+    generation_strategy: Literal["fast_multishot"] = "fast_multishot"
+    generation_unit_duration_seconds: Literal[10] = 10
+    generation_unit_count: int = 0
+    internal_shot_count: int = 0
+    narrative_mode: Literal["cinematic_human_story", "factual_documentary"] = (
+        "cinematic_human_story"
+    )
+    story_generation_mode: Literal[
+        "ai_generated", "deterministic_fallback", "legacy"
+    ] = "legacy"
+    script_generation_mode: Literal[
+        "ai_generated", "deterministic_fallback", "legacy"
+    ] = "legacy"
     generation_mode: Literal["ai_optimized", "mixed", "fallback"] = "ai_optimized"
+    ready_for_generation: bool = False
+    readiness: ProductionReadinessData = Field(default_factory=ProductionReadinessData)
+    narrative_quality: NarrativeQualityData = Field(default_factory=NarrativeQualityData)
+    animatic: AnimaticCheckData = Field(default_factory=AnimaticCheckData)
+    audio_plan: GlobalAudioPlanData = Field(default_factory=GlobalAudioPlanData)
     warnings: list[str] = Field(default_factory=list)
     prompt_preservation: Literal["lossless"] = "lossless"
     style_bible: str

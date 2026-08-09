@@ -163,7 +163,7 @@ export function ProductionWorkspace({
         shotEdits[activeShot.shot_id]?.text ?? activeShot.prompt_body_template,
       );
     } catch (cause) {
-      setLocalError(cause instanceof Error ? cause.message : "当前镜头重新优化失败");
+      setLocalError(cause instanceof Error ? cause.message : "当前生成单元重新优化失败");
     } finally {
       setRegenerating(null);
     }
@@ -176,9 +176,9 @@ export function ProductionWorkspace({
           <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">
             Cinematic production
           </p>
-          <h2 className="mt-3 text-[28px] font-semibold tracking-[-0.04em]">逐镜头影视生成包</h2>
+          <h2 className="mt-3 text-[28px] font-semibold tracking-[-0.04em]">多镜头影视生成包</h2>
           <p className="mt-3 text-sm leading-6 text-ink-2">
-            自动生成角色参考图提示词、表演主档案和可直接复制的视频提示词。每个镜头硬限制在 10 秒以内。
+            每 10 秒只生成一次，每次内部自动编排 1–3 个电影微镜头，并保持人物、动作和声音连续。
           </p>
           <button
             className="mt-6 rounded-xl bg-ink px-5 py-3 text-sm font-semibold text-paper disabled:opacity-40"
@@ -197,6 +197,10 @@ export function ProductionWorkspace({
   const activeTemplate = activeShot
     ? shotEdits[activeShot.shot_id]?.text ?? activeShot.prompt_body_template
     : "";
+  const generationUnitCount = payload.generation_unit_count || payload.shots.length;
+  const internalShotCount =
+    payload.internal_shot_count ||
+    payload.shots.reduce((total, shot) => total + Math.max(shot.internal_shots.length, 1), 0);
 
   return (
     <div>
@@ -205,10 +209,13 @@ export function ProductionWorkspace({
           <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">
             Cinematic production
           </p>
-          <h2 className="mt-2 text-[30px] font-semibold tracking-[-0.045em]">逐镜头导演工作台</h2>
+          <h2 className="mt-2 text-[30px] font-semibold tracking-[-0.045em]">多镜头生成工作台</h2>
           <p className="mt-2 text-xs text-ink-2">
-            {payload.shots.length} 个镜头 · 每镜头 ≤ {payload.max_shot_duration_seconds} 秒 · 总时长 {payload.duration_seconds} 秒
+            {generationUnitCount} 次生成 · {internalShotCount} 个内部镜头 · 每次 ≤ {payload.generation_unit_duration_seconds} 秒 · 总时长 {payload.duration_seconds} 秒
           </p>
+          <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold ${payload.ready_for_generation ? "bg-verified/[0.08] text-verified" : "bg-pending/[0.08] text-pending"}`}>
+            {payload.ready_for_generation ? `成片就绪 · ${payload.readiness.score}` : `未通过成片就绪门 · ${payload.readiness.score}`}
+          </span>
         </div>
         <div className="flex flex-wrap gap-2">
           <a
@@ -246,9 +253,15 @@ export function ProductionWorkspace({
           ))}
         </div>
         <div className="mt-3 rounded-xl bg-verified/[0.07] px-4 py-3 text-xs leading-5 text-verified">
-          三份 SKILL.md 均按原文逐字加载；提示词不会被总结、缩写或截断。10 秒限制只拆分镜头，不压缩提示词。角色参考图只有在你填入真实 @标签后才会写入。
+          三份 SKILL.md 均按原文逐字加载；每张生成卡只需提交平台一次，卡内 1–3 个内部镜头由同一次 Seedance 生成完成。角色参考图只有在你填入真实 @标签后才会写入。
           {payload.llm_profile ? ` 当前生成档位：${payload.llm_profile}。` : ""}
         </div>
+        {!isRunning && !payload.ready_for_generation ? (
+          <div className="mt-3 rounded-xl bg-pending/[0.07] px-4 py-3 text-xs leading-5 text-pending">
+            <p className="font-semibold">当前结果只供诊断，复制成片提示词已锁定</p>
+            <p className="mt-1">{payload.readiness.blockers.join("；")}</p>
+          </div>
+        ) : null}
         {isRunning ? (
           <div className="mt-3 rounded-xl bg-verified/[0.07] px-4 py-3 text-xs leading-5 text-verified">
             <p className="font-semibold">正在并行生成新版本</p>
@@ -262,7 +275,7 @@ export function ProductionWorkspace({
               {payload.generation_mode === "fallback" ? "当前为安全模板模式" : "当前为混合优化模式"}
             </p>
             <p className="mt-1">
-              部分模型调用失败，镜头仍可直接使用；修复 LLM 配置后点击“重新生成全部”即可获得完整 AI 优化版本。
+              部分模型调用失败，生成单元仍可查看；修复 LLM 配置后点击“重新生成全部”即可获得完整 AI 优化版本。
             </p>
             <details className="mt-2">
               <summary className="cursor-pointer font-semibold">查看原因</summary>
@@ -272,6 +285,71 @@ export function ProductionWorkspace({
             </details>
           </div>
         ) : null}
+      </section>
+
+      <section className="mt-8 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="rounded-2xl bg-paper-2 p-5 ring-1 ring-rule">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Low-cost animatic</p>
+              <h3 className="mt-2 text-lg font-semibold">节奏样片检查</h3>
+            </div>
+            <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${payload.animatic.passed ? "bg-verified/[0.08] text-verified" : "bg-pending/[0.08] text-pending"}`}>
+              {payload.animatic.score} 分
+            </span>
+          </div>
+          <p className="mt-3 text-xs leading-5 text-ink-2">
+            {payload.animatic.generation_unit_count || generationUnitCount} 次生成 · {payload.animatic.internal_shot_count || internalShotCount} 个内部镜头 · 平均 {payload.animatic.average_internal_shot_duration_seconds || payload.animatic.average_shot_duration_seconds} 秒
+          </p>
+          <div className="mt-4 flex h-16 items-end gap-1 rounded-xl bg-card p-2 ring-1 ring-rule">
+            {payload.shots.map((shot) => (
+              <button
+                aria-label={`${shot.title}，一次生成包含 ${Math.max(shot.internal_shots.length, 1)} 个内部镜头`}
+                className="flex h-full min-w-4 items-end gap-px rounded-sm bg-ink/[0.04] p-0.5 transition hover:bg-ink/[0.08]"
+                key={`rhythm-${shot.shot_id}`}
+                onClick={() => setActiveIndex(payload.shots.findIndex((item) => item.shot_id === shot.shot_id))}
+                style={{ flexGrow: shot.duration_seconds }}
+                title={`${shot.narrative_function} · 一次生成 ${shot.duration_seconds}s · ${Math.max(shot.internal_shots.length, 1)} 个内部镜头`}
+                type="button"
+              >
+                {(shot.internal_shots.length
+                  ? shot.internal_shots
+                  : [{
+                      internal_shot_id: `${shot.shot_id}_legacy`,
+                      start_offset_seconds: 0,
+                      end_offset_seconds: shot.duration_seconds,
+                      intensity: shot.intensity,
+                    }]
+                ).map((internal) => (
+                  <span
+                    className="min-w-px rounded-[2px] bg-verified/75"
+                    key={internal.internal_shot_id}
+                    style={{
+                      flexGrow: internal.end_offset_seconds - internal.start_offset_seconds,
+                      height: `${Math.max(14, internal.intensity)}%`,
+                    }}
+                  />
+                ))}
+              </button>
+            ))}
+          </div>
+          {payload.animatic.issues.length ? <p className="mt-3 text-xs leading-5 text-pending">{payload.animatic.issues.join("；")}</p> : null}
+        </div>
+
+        <div className="rounded-2xl bg-ink p-5 text-paper">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Sound arc</p>
+          <h3 className="mt-2 text-lg font-semibold">全片声音曲线</h3>
+          <p className="mt-3 text-xs leading-5 text-ink-3">{payload.audio_plan.score_arc}</p>
+          <p className="mt-3 text-xs leading-5 text-ink-3">{payload.audio_plan.music_rule}</p>
+          <div className="mt-4 space-y-2">
+            {payload.audio_plan.cues.map((cue, index) => (
+              <div className="rounded-lg bg-white/[0.06] px-3 py-2 text-[11px] leading-4 text-ink-3" key={`${cue.layer}-${cue.start_second}-${index}`}>
+                <span className="font-semibold text-paper">{timecode(cue.start_second)}–{timecode(cue.end_second)} · {cue.layer}</span>
+                <span className="ml-2">{cue.description}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="mt-10">
@@ -327,7 +405,7 @@ export function ProductionWorkspace({
                         onChange={(event) => updateReference(character.id, { enabled: event.target.checked })}
                         type="checkbox"
                       />
-                      镜头使用参考图
+                      生成单元使用参考图
                     </label>
                     <input
                       className={`rounded-xl border bg-card px-3 py-2 text-xs outline-none focus:ring-2 ${
@@ -342,7 +420,7 @@ export function ProductionWorkspace({
                     />
                   </div>
                   {choice.enabled && !validTag ? (
-                    <p className="mt-2 text-[11px] text-pending">未填写有效 @标签时，复制的镜头会自动改用完整文字角色描述。</p>
+                    <p className="mt-2 text-[11px] text-pending">未填写有效 @标签时，复制的生成单元会自动改用完整文字角色描述。</p>
                   ) : null}
 
                   <details className="mt-4 border-t border-rule pt-4">
@@ -365,25 +443,26 @@ export function ProductionWorkspace({
       <section className="mt-12 border-t border-rule pt-9">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Shot director</p>
-            <h3 className="mt-2 text-[24px] font-semibold tracking-[-0.035em]">逐镜头成片提示词</h3>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Generation unit director</p>
+            <h3 className="mt-2 text-[24px] font-semibold tracking-[-0.035em]">10 秒生成单元提示词</h3>
           </div>
           <button
             className="rounded-xl bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule"
+            disabled={!payload.ready_for_generation}
             onClick={() =>
               void copyText(
                 "all-shots",
                 payload.shots
                   .map((shot) => {
                     const template = shotEdits[shot.shot_id]?.text ?? shot.prompt_body_template;
-                    return `${shot.title}（${shot.duration_seconds} 秒）\n${resolvedPrompt(shot, template)}`;
+                    return `${shot.title}（一次生成 ${shot.duration_seconds} 秒，内部 ${Math.max(shot.internal_shots.length, 1)} 镜头）\n${resolvedPrompt(shot, template)}`;
                   })
                   .join("\n\n==========\n\n"),
               )
             }
             type="button"
           >
-            {copied === "all-shots" ? "已复制全部" : "复制全部镜头"}
+            {payload.ready_for_generation ? (copied === "all-shots" ? "已复制全部" : "复制全部生成单元") : "未就绪，禁止复制"}
           </button>
         </div>
 
@@ -407,7 +486,7 @@ export function ProductionWorkspace({
               type="button"
             >
               <span className="text-[10px] font-semibold text-ink-3">
-                {String(index + 1).padStart(2, "0")} · {shot.duration_seconds}s · v{shot.revision}
+                第 {index + 1} 次生成 · {shot.duration_seconds}s · 内部 {Math.max(shot.internal_shots.length, 1)} 镜 · v{shot.revision}
               </span>
               <span className="mt-1 block truncate text-xs font-semibold">{shot.title}</span>
             </button>
@@ -424,9 +503,12 @@ export function ProductionWorkspace({
                   </span>
                   <h4 className="text-[17px] font-semibold">{activeShot.title}</h4>
                   <span className="rounded-full bg-verified/[0.08] px-2 py-0.5 text-[10px] font-semibold text-verified">
-                    {activeShot.duration_seconds} 秒 · ≤ 10 秒
+                    一次生成 {activeShot.duration_seconds} 秒 · 内部 {Math.max(activeShot.internal_shots.length, 1)} 镜头
                   </span>
                   <span className="text-[10px] text-ink-3">版本 {activeShot.revision}</span>
+                  <span className="rounded-full bg-paper-2 px-2 py-0.5 text-[10px] font-semibold text-ink-2">
+                    {activeShot.sequence_id} · {activeShot.narrative_function} · 强度 {activeShot.intensity}
+                  </span>
                 </div>
                 <p className="mt-2 text-xs text-ink-2">
                   {timecode(activeShot.start_second)}–{timecode(activeShot.end_second)} · {activeShot.visual_brief}
@@ -439,7 +521,7 @@ export function ProductionWorkspace({
                   onClick={() => setActiveIndex((index) => Math.max(index - 1, 0))}
                   type="button"
                 >
-                  上一镜头
+                  上一生成单元
                 </button>
                 <button
                   className="rounded-lg bg-card px-3 py-2 text-xs font-semibold ring-1 ring-rule disabled:opacity-35"
@@ -447,7 +529,7 @@ export function ProductionWorkspace({
                   onClick={() => setActiveIndex((index) => Math.min(index + 1, payload.shots.length - 1))}
                   type="button"
                 >
-                  下一镜头
+                  下一生成单元
                 </button>
               </div>
             </div>
@@ -467,6 +549,48 @@ export function ProductionWorkspace({
                   ) : null}
                 </div>
               ) : null}
+
+              {activeShot.internal_shots.length ? (
+                <div className="mb-4 rounded-xl bg-ink/[0.025] p-4 ring-1 ring-rule">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-ink">内部镜头时间轴</span>
+                    <span className="rounded-full bg-verified/[0.08] px-2 py-0.5 text-[10px] font-semibold text-verified">
+                      {activeShot.format_mode === "single_take" ? "单一长镜头" : "受控多镜头"} · 本卡只生成一次
+                    </span>
+                  </div>
+                  <div className="mt-3 grid gap-2 lg:grid-cols-3">
+                    {activeShot.internal_shots.map((internal, index) => (
+                      <div className="rounded-lg bg-card p-3 text-[11px] leading-5 text-ink-2 ring-1 ring-rule" key={internal.internal_shot_id}>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-ink">
+                            {String.fromCharCode(65 + index)} · {internal.start_offset_seconds}–{internal.end_offset_seconds}s
+                          </span>
+                          <span className="text-[10px] font-semibold text-verified">
+                            {internal.shot_size} · {internal.fov_degrees}°
+                          </span>
+                        </div>
+                        {index ? <p className="mt-1 text-[10px] font-semibold text-pending">{internal.cut_in} · {internal.cut_motivation}</p> : null}
+                        <p className="mt-2">{internal.visual_action}</p>
+                        <p className="mt-2 text-ink-3">摄影机：{internal.camera}</p>
+                        <p className="mt-2 border-t border-rule pt-2 text-ink-3">
+                          {internal.entry_state} → {internal.exit_state}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="mb-4 grid gap-3 lg:grid-cols-2">
+                <div className="rounded-xl bg-paper-2 p-3 text-xs leading-5 text-ink-2">
+                  <span className="font-semibold text-ink">表演压力</span><br />
+                  目标：{activeShot.objective}<br />阻碍：{activeShot.obstacle}<br />代价：{activeShot.stakes}<br />策略：{activeShot.tactic}
+                </div>
+                <div className="rounded-xl bg-paper-2 p-3 text-xs leading-5 text-ink-2">
+                  <span className="font-semibold text-ink">连续性账本</span><br />
+                  入口：{activeShot.entry_state}<br />出口：{activeShot.exit_state}<br />切点：{activeShot.cut_motivation}<br />声音桥：{activeShot.audio_bridge}
+                </div>
+              </div>
 
               <label className="text-xs font-semibold text-ink-2" htmlFor={`prompt-${activeShot.shot_id}`}>
                 可编辑提示词模板
@@ -492,10 +616,11 @@ export function ProductionWorkspace({
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   className="rounded-xl bg-ink px-4 py-2.5 text-xs font-semibold text-paper"
+                  disabled={!payload.ready_for_generation}
                   onClick={() => void copyText(activeShot.shot_id, resolvedPrompt(activeShot, activeTemplate))}
                   type="button"
                 >
-                  {copied === activeShot.shot_id ? "已复制，可直接生成" : "复制当前镜头"}
+                  {payload.ready_for_generation ? (copied === activeShot.shot_id ? "已复制，可直接生成一次" : "复制当前生成单元") : "未就绪，禁止复制"}
                 </button>
                 <button
                   className="rounded-xl bg-ink px-4 py-2.5 text-xs font-semibold text-paper disabled:opacity-40"
@@ -503,7 +628,7 @@ export function ProductionWorkspace({
                   onClick={() => void regenerateActiveShot()}
                   type="button"
                 >
-                  {regenerating === activeShot.shot_id ? "正在重新优化…" : "重新优化当前镜头"}
+                  {regenerating === activeShot.shot_id ? "正在重新优化…" : "重新优化当前生成单元"}
                 </button>
                 <button
                   className="rounded-xl bg-paper-2 px-4 py-2.5 text-xs font-semibold text-ink-2 hover:bg-rule"
