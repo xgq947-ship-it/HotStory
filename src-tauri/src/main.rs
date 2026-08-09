@@ -4,13 +4,15 @@
 // 拉起来、等它健康之后把窗口导航过去。退出时必须把子进程收掉，否则会留下孤儿进程。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::fs::OpenOptions;
+use std::io::{self, ErrorKind};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::{Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -47,10 +49,87 @@ fn interpreter(runtime: &Path) -> PathBuf {
     }
 }
 
+fn runtime_dir_for_executable(executable: &Path) -> io::Result<PathBuf> {
+    let executable_dir = executable
+        .parent()
+        .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "无法确定 HotStory 可执行文件目录"))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        // 安装包：HotStory.app/Contents/MacOS/hotstory
+        // 调试：src-tauri/target/<profile>/hotstory
+        if executable_dir
+            .file_name()
+            .is_some_and(|name| name == "MacOS")
+        {
+            let contents = executable_dir.parent().ok_or_else(|| {
+                io::Error::new(ErrorKind::NotFound, "无法确定 HotStory.app/Contents 目录")
+            })?;
+            return Ok(contents.join("Resources").join("runtime"));
+        }
+    }
+
+    Ok(executable_dir.join("runtime"))
+}
+
+fn bundled_runtime_dir() -> io::Result<PathBuf> {
+    let runtime = runtime_dir_for_executable(&std::env::current_exe()?)?;
+    let python = interpreter(&runtime);
+    let backend = runtime.join("backend");
+    if !python.is_file() {
+        return Err(io::Error::new(
+            ErrorKind::NotFound,
+            format!("找不到内嵌 Python：{}", python.display()),
+        ));
+    }
+    if !backend.is_dir() {
+        return Err(io::Error::new(
+            ErrorKind::NotFound,
+            format!("找不到内嵌后端：{}", backend.display()),
+        ));
+    }
+    Ok(runtime)
+}
+
+fn persistent_data_dir(handle: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(value) = std::env::var_os("HOTSTORY_DATA_DIR").filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err("HOTSTORY_DATA_DIR 必须是绝对路径".to_string());
+        }
+        return Ok(path);
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("HotStory")
+            .join("data"));
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(app_data) = std::env::var_os("APPDATA").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(app_data).join("HotStory").join("data"));
+    }
+
+    handle
+        .path()
+        .data_dir()
+        .map(|path| path.join("HotStory").join("data"))
+        .map_err(|error| format!("无法确定 HotStory 数据目录：{error}"))
+}
+
 fn spawn_backend(runtime: &Path, data_dir: &Path, port: u16) -> std::io::Result<Child> {
     let python = interpreter(runtime);
     let backend = runtime.join("backend");
     let database = data_dir.join("hotstory.db");
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data_dir.join("hotstory-app.log"))?;
+    let error_log = log.try_clone()?;
 
     let mut command = Command::new(python);
     command
@@ -74,8 +153,8 @@ fn spawn_backend(runtime: &Path, data_dir: &Path, port: u16) -> std::io::Result<
             ),
         )
         .env("PYTHONUNBUFFERED", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(error_log));
 
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -127,18 +206,34 @@ fn main() {
         .manage(Backend(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
-            let runtime = handle
-                .path()
-                .resolve("runtime", tauri::path::BaseDirectory::Resource)?;
+            let window = app.get_webview_window("main").expect("缺少主窗口");
+            let runtime = match bundled_runtime_dir() {
+                Ok(path) => path,
+                Err(error) => {
+                    show_failure(&window, &format!("运行环境不完整：{error}"));
+                    return Ok(());
+                }
+            };
             // 沿用旧版 HotStory.app 的数据目录，保证切换到 Tauri 原生窗口后，
             // 已有项目、设置和 .env 不会看起来像“丢失”了。
             // macOS: ~/Library/Application Support/HotStory/data
             // Windows: %APPDATA%/HotStory/data
-            let data_dir = handle.path().data_dir()?.join("HotStory").join("data");
-            std::fs::create_dir_all(&data_dir)?;
+            let data_dir = match persistent_data_dir(&handle) {
+                Ok(path) => path,
+                Err(error) => {
+                    show_failure(&window, &error);
+                    return Ok(());
+                }
+            };
+            if let Err(error) = std::fs::create_dir_all(&data_dir) {
+                show_failure(
+                    &window,
+                    &format!("无法创建数据目录 {}：{error}", data_dir.display()),
+                );
+                return Ok(());
+            }
 
             let port = free_port();
-            let window = app.get_webview_window("main").expect("缺少主窗口");
 
             match spawn_backend(&runtime, &data_dir, port) {
                 Ok(child) => {
@@ -153,13 +248,20 @@ fn main() {
             }
 
             let ready_window = window.clone();
+            let log_path = data_dir.join("hotstory-app.log");
             std::thread::spawn(move || {
                 if wait_ready(port, Duration::from_secs(120)) {
                     let _ = ready_window.eval(&format!(
                         "window.location.replace('http://127.0.0.1:{port}/')"
                     ));
                 } else {
-                    show_failure(&ready_window, "本地服务启动超时，请退出后重试。");
+                    show_failure(
+                        &ready_window,
+                        &format!(
+                            "本地服务启动超时，请退出后重试。日志：{}",
+                            log_path.display()
+                        ),
+                    );
                 }
             });
 
@@ -180,4 +282,29 @@ fn main() {
                 handle.state::<Backend>().stop();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_dir_for_executable;
+    use std::path::Path;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolves_runtime_inside_macos_app_bundle() {
+        let executable = Path::new("/Applications/HotStory.app/Contents/MacOS/hotstory");
+        assert_eq!(
+            runtime_dir_for_executable(executable).unwrap(),
+            Path::new("/Applications/HotStory.app/Contents/Resources/runtime")
+        );
+    }
+
+    #[test]
+    fn resolves_runtime_next_to_development_binary() {
+        let executable = Path::new("/workspace/src-tauri/target/debug/hotstory");
+        assert_eq!(
+            runtime_dir_for_executable(executable).unwrap(),
+            Path::new("/workspace/src-tauri/target/debug/runtime")
+        );
+    }
 }
