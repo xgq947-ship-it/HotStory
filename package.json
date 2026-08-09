@@ -1,0 +1,19 @@
+{
+  "name": "hotstory-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "runtime:python": "node scripts/prepare-python-runtime.mjs",
+    "runtime:backend": "node scripts/prepare-backend-payload.mjs",
+    "runtime:webui": "cd frontend && npm run build && cd .. && node -e \"require('fs').cpSync('frontend/out','runtime/webui',{recursive:true})\"",
+    "runtime:icons": "tauri icon src-tauri/app-icon.png -o src-tauri/icons",
+    "runtime:prepare": "npm run runtime:icons && npm run runtime:python && npm run runtime:backend && npm run runtime:webui",
+    "tauri": "tauri",
+    "desktop:dev": "npm run runtime:prepare && tauri dev",
+    "desktop:build": "npm run runtime:prepare && tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0"
+  }
+}

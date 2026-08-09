@@ -1,0 +1,69 @@
+name: 桌面端构建
+
+# Windows 包无法在 macOS 上交叉编译：Tauri 需要 MSVC 工具链，
+# 而 lxml / primp / pydantic-core 是各平台各自的二进制轮子。
+# 所以每个平台都在对应的 runner 上原生构建。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14        # Apple Silicon
+            target: aarch64-apple-darwin
+          - os: macos-13        # Intel
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装打包工具
+        run: npm install
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 准备内嵌运行时（Python + 后端 + 界面）
+        run: npm run runtime:prepare
+
+      - name: 冒烟测试——内嵌解释器能否导入后端
+        working-directory: runtime/backend
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ../python/python.exe -c "import app.main; print('backend import ok')"
+          else
+            ../python/bin/python3 -c "import app.main; print('backend import ok')"
+          fi
+
+      - name: 构建桌面应用
+        run: npx tauri build --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hotstory-${{ matrix.target }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+          if-no-files-found: warn

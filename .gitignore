@@ -30,3 +30,10 @@ data/projects/*
 
 # 打包产物：由 scripts/build_app.sh 生成，且运行时会在包内写 __pycache__
 HotStory.app/
+
+# 内嵌运行时：由 scripts/prepare-*.mjs 下载/生成，不进版本库
+runtime/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/icons/
+node_modules/

@@ -10,3 +10,7 @@ tenacity
 trafilatura
 uvicorn[standard]
 
+
+# uvloop 没有 Windows 轮子；uvicorn 在 Windows 上会退回 asyncio 事件循环。
+# 这条标记必须保留，否则 Windows 打包时装依赖会直接失败。
+uvloop ; sys_platform != "win32"
