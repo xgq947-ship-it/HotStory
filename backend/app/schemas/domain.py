@@ -330,3 +330,59 @@ class HealthResponse(BaseModel):
 
 
 JsonValue = dict[str, Any] | list[Any]
+
+
+class SettingFieldState(BaseModel):
+    name: str
+    label: str
+    group: str
+    kind: str
+    secret: bool
+    options: list[str] = Field(default_factory=list)
+    help: str = ""
+    placeholder: str = ""
+    restart_required: bool = False
+    editable: bool = True
+    value: Any = ""
+    configured: bool = False
+    source: str = "default"
+
+
+class SettingsResponse(BaseModel):
+    groups: dict[str, str]
+    fields: list[SettingFieldState]
+    version: str
+    repository_url: str
+
+
+class SettingsUpdateRequest(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+    clear: list[str] = Field(default_factory=list)
+
+
+class CodexDetectRequest(BaseModel):
+    path: str = ""
+
+
+class CodexStatusResponse(BaseModel):
+    available: bool
+    path: str = ""
+    version: str = ""
+    error: str = ""
+    searched: list[str] = Field(default_factory=list)
+
+
+class ReleaseInfo(BaseModel):
+    tag_name: str
+    name: str
+    html_url: str
+    body: str = ""
+    published_at: str = ""
+
+
+class UpdateCheckResponse(BaseModel):
+    current_version: str
+    latest: ReleaseInfo | None = None
+    update_available: bool = False
+    releases: list[ReleaseInfo] = Field(default_factory=list)
+    error: str = ""

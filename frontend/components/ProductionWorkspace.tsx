@@ -171,24 +171,24 @@ export function ProductionWorkspace({
 
   if (!payload) {
     return (
-      <div className="subtle-grid grid min-h-[430px] place-items-center rounded-[18px] border border-dashed border-zinc-300 px-6 text-center">
+      <div className="subtle-grid grid min-h-[430px] place-items-center rounded-[4px] border border-dashed border-rule px-6 text-center">
         <div className="max-w-md">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">
             Cinematic production
           </p>
           <h2 className="mt-3 text-[28px] font-semibold tracking-[-0.04em]">逐镜头影视生成包</h2>
-          <p className="mt-3 text-sm leading-6 text-zinc-500">
+          <p className="mt-3 text-sm leading-6 text-ink-2">
             自动生成角色参考图提示词、表演主档案和可直接复制的视频提示词。每个镜头硬限制在 10 秒以内。
           </p>
           <button
-            className="mt-6 rounded-xl bg-zinc-950 px-5 py-3 text-sm font-semibold text-white disabled:opacity-40"
+            className="mt-6 rounded-[3px] bg-ink px-5 py-3 text-sm font-semibold text-paper disabled:opacity-40"
             disabled={!scriptReady || busy || isRunning}
             onClick={() => void onGenerate()}
             type="button"
           >
             {isRunning ? "正在生成…" : "生成影视包"}
           </button>
-          {!scriptReady ? <p className="mt-3 text-xs text-amber-700">请先生成并通过审校的剧本。</p> : null}
+          {!scriptReady ? <p className="mt-3 text-xs text-pending">请先生成并通过审校的剧本。</p> : null}
         </div>
       </div>
     );
@@ -200,25 +200,25 @@ export function ProductionWorkspace({
 
   return (
     <div>
-      <div className="flex flex-col gap-4 border-b border-zinc-950/[0.07] pb-6 sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-4 border-b border-rule pb-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">
             Cinematic production
           </p>
           <h2 className="mt-2 text-[30px] font-semibold tracking-[-0.045em]">逐镜头导演工作台</h2>
-          <p className="mt-2 text-xs text-zinc-500">
+          <p className="mt-2 text-xs text-ink-2">
             {payload.shots.length} 个镜头 · 每镜头 ≤ {payload.max_shot_duration_seconds} 秒 · 总时长 {payload.duration_seconds} 秒
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <a
-            className="rounded-xl bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-200"
+            className="rounded-[3px] bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule"
             href={productionPackageDownloadUrl(topicId)}
           >
             导出 JSON
           </a>
           <button
-            className="rounded-xl bg-zinc-950 px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-40"
+            className="rounded-[3px] bg-ink px-3.5 py-2 text-xs font-semibold text-paper disabled:opacity-40"
             disabled={busy || isRunning}
             onClick={() => void onGenerate()}
             type="button"
@@ -231,33 +231,33 @@ export function ProductionWorkspace({
       <section className="mt-7">
         <div className="grid gap-3 md:grid-cols-3">
           {payload.skills.map((stage) => (
-            <div className="rounded-[18px] bg-zinc-950/[0.025] p-5 ring-1 ring-zinc-950/[0.06]" key={stage.skill}>
+            <div className="rounded-[4px] bg-ink/[0.025] p-5 ring-1 ring-rule" key={stage.skill}>
               <div className="flex items-center gap-3">
-                <span className="grid size-9 place-items-center rounded-xl bg-zinc-950 text-xs font-bold text-white">
+                <span className="grid size-9 place-items-center rounded-[3px] bg-ink text-xs font-bold text-paper">
                   {String(stage.order).padStart(2, "0")}
                 </span>
                 <p className="text-sm font-semibold">{stage.skill}</p>
               </div>
-              <p className="mt-3 text-xs leading-5 text-zinc-500">{stage.purpose}</p>
-              <p className="mt-2 text-[10px] font-semibold text-emerald-700">
+              <p className="mt-3 text-xs leading-5 text-ink-2">{stage.purpose}</p>
+              <p className="mt-2 text-[10px] font-semibold text-verified">
                 完整 SKILL 原文 · 无损
               </p>
             </div>
           ))}
         </div>
-        <div className="mt-3 rounded-xl bg-blue-50 px-4 py-3 text-xs leading-5 text-blue-800">
+        <div className="mt-3 rounded-[3px] bg-verified/[0.07] px-4 py-3 text-xs leading-5 text-verified">
           三份 SKILL.md 均按原文逐字加载；提示词不会被总结、缩写或截断。10 秒限制只拆分镜头，不压缩提示词。角色参考图只有在你填入真实 @标签后才会写入。
           {payload.llm_profile ? ` 当前生成档位：${payload.llm_profile}。` : ""}
         </div>
         {isRunning ? (
-          <div className="mt-3 rounded-xl bg-blue-50 px-4 py-3 text-xs leading-5 text-blue-800">
+          <div className="mt-3 rounded-[3px] bg-verified/[0.07] px-4 py-3 text-xs leading-5 text-verified">
             <p className="font-semibold">正在并行生成新版本</p>
             <p className="mt-1">
               当前页面暂时保留上一次结果；新版本完成后会自动替换，旧的 401 提示不代表本次仍在失败。
             </p>
           </div>
         ) : payload.generation_mode !== "ai_optimized" ? (
-          <div className="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
+          <div className="mt-3 rounded-[3px] bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
             <p className="font-semibold">
               {payload.generation_mode === "fallback" ? "当前为安全模板模式" : "当前为混合优化模式"}
             </p>
@@ -277,10 +277,10 @@ export function ProductionWorkspace({
       <section className="mt-10">
         <div className="flex items-end justify-between gap-4">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">Character assets</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Character assets</p>
             <h3 className="mt-2 text-[24px] font-semibold tracking-[-0.035em]">人物参考资产</h3>
           </div>
-          <span className="text-xs text-zinc-400">{payload.characters.length} 个角色</span>
+          <span className="text-xs text-ink-3">{payload.characters.length} 个角色</span>
         </div>
 
         {payload.characters.length ? (
@@ -292,19 +292,19 @@ export function ProductionWorkspace({
               };
               const validTag = TAG_PATTERN.test(choice.tag.trim());
               return (
-                <article className="rounded-[18px] p-5 ring-1 ring-zinc-950/[0.07]" key={character.id}>
+                <article className="rounded-[4px] p-5 ring-1 ring-rule" key={character.id}>
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <h4 className="text-[17px] font-semibold">{character.prompt_label}</h4>
-                        <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-zinc-500">
+                        <span className="rounded-full bg-paper-2 px-2 py-0.5 text-[10px] font-semibold text-ink-2">
                           {character.role === "lead" ? "主角" : "配角"}
                         </span>
                       </div>
-                      <p className="mt-1 text-xs leading-5 text-zinc-500">{character.story_function}</p>
+                      <p className="mt-1 text-xs leading-5 text-ink-2">{character.story_function}</p>
                     </div>
                     <button
-                      className="shrink-0 rounded-lg bg-zinc-100 px-3 py-2 text-xs font-semibold hover:bg-zinc-200"
+                      className="shrink-0 rounded-lg bg-paper-2 px-3 py-2 text-xs font-semibold hover:bg-rule"
                       onClick={() => void copyText(`character:${character.id}`, character.image_prompt)}
                       type="button"
                     >
@@ -312,28 +312,28 @@ export function ProductionWorkspace({
                     </button>
                   </div>
 
-                  <div className="mt-4 rounded-xl bg-zinc-950/[0.025] p-4 text-xs leading-5 text-zinc-600">
+                  <div className="mt-4 rounded-[3px] bg-ink/[0.025] p-4 text-xs leading-5 text-ink-2">
                     <p>{character.image_prompt}</p>
-                    <p className="mt-3 border-t border-zinc-950/[0.06] pt-3 text-zinc-400">
+                    <p className="mt-3 border-t border-rule pt-3 text-ink-3">
                       {character.image_settings.model} · {character.image_settings.aspect_ratio} · {character.image_settings.quality} · {character.image_settings.consistency}
                     </p>
                   </div>
 
                   <div className="mt-4 grid gap-3 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-zinc-700">
+                    <label className="flex items-center gap-2 text-xs font-semibold text-ink-2">
                       <input
                         checked={choice.enabled}
-                        className="size-4 accent-zinc-950"
+                        className="size-4 accent-ink"
                         onChange={(event) => updateReference(character.id, { enabled: event.target.checked })}
                         type="checkbox"
                       />
                       镜头使用参考图
                     </label>
                     <input
-                      className={`rounded-xl border bg-white px-3 py-2 text-xs outline-none focus:ring-2 ${
+                      className={`rounded-[3px] border bg-card px-3 py-2 text-xs outline-none focus:ring-2 ${
                         choice.enabled && choice.tag && !validTag
                           ? "border-red-300 focus:ring-red-100"
-                          : "border-zinc-200 focus:ring-blue-100"
+                          : "border-rule focus:ring-verified/20"
                       }`}
                       disabled={!choice.enabled}
                       onChange={(event) => updateReference(character.id, { tag: event.target.value })}
@@ -342,34 +342,34 @@ export function ProductionWorkspace({
                     />
                   </div>
                   {choice.enabled && !validTag ? (
-                    <p className="mt-2 text-[11px] text-amber-700">未填写有效 @标签时，复制的镜头会自动改用完整文字角色描述。</p>
+                    <p className="mt-2 text-[11px] text-pending">未填写有效 @标签时，复制的镜头会自动改用完整文字角色描述。</p>
                   ) : null}
 
-                  <details className="mt-4 border-t border-zinc-950/[0.07] pt-4">
-                    <summary className="cursor-pointer text-xs font-semibold text-zinc-600">查看表演主档案与声线</summary>
-                    <p className="mt-3 text-xs leading-6 text-zinc-500">{character.acting_profile}</p>
-                    {character.voice_prompt ? <p className="mt-2 text-xs leading-5 text-zinc-500">声线：{character.voice_prompt}</p> : null}
-                    <p className="mt-3 text-[11px] text-zinc-400">{character.disclosure}</p>
+                  <details className="mt-4 border-t border-rule pt-4">
+                    <summary className="cursor-pointer text-xs font-semibold text-ink-2">查看表演主档案与声线</summary>
+                    <p className="mt-3 text-xs leading-6 text-ink-2">{character.acting_profile}</p>
+                    {character.voice_prompt ? <p className="mt-2 text-xs leading-5 text-ink-2">声线：{character.voice_prompt}</p> : null}
+                    <p className="mt-3 text-[11px] text-ink-3">{character.disclosure}</p>
                   </details>
                 </article>
               );
             })}
           </div>
         ) : (
-          <div className="mt-5 rounded-xl border border-dashed border-zinc-300 p-6 text-center text-sm text-zinc-400">
+          <div className="mt-5 rounded-[3px] border border-dashed border-rule p-6 text-center text-sm text-ink-3">
             本剧本没有需要持续出镜的核心人物，将直接使用资料、环境与物件镜头。
           </div>
         )}
       </section>
 
-      <section className="mt-12 border-t border-zinc-950/[0.07] pt-9">
+      <section className="mt-12 border-t border-rule pt-9">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">Shot director</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Shot director</p>
             <h3 className="mt-2 text-[24px] font-semibold tracking-[-0.035em]">逐镜头成片提示词</h3>
           </div>
           <button
-            className="rounded-xl bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-200"
+            className="rounded-[3px] bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule"
             onClick={() =>
               void copyText(
                 "all-shots",
@@ -388,25 +388,25 @@ export function ProductionWorkspace({
         </div>
 
         {invalidReferenceCount ? (
-          <div className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-xs text-amber-800">
+          <div className="mt-4 rounded-[3px] bg-amber-50 px-4 py-3 text-xs text-amber-800">
             {invalidReferenceCount} 个已启用角色还没有有效 @标签；这些角色当前会使用文字锚点，不影响直接复制生成。
           </div>
         ) : null}
-        {localError ? <div className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-xs text-red-700">{localError}</div> : null}
+        {localError ? <div className="mt-4 rounded-[3px] bg-pending/[0.07] px-4 py-3 text-xs text-pending">{localError}</div> : null}
 
         <div className="mt-5 flex gap-2 overflow-x-auto pb-2">
           {payload.shots.map((shot, index) => (
             <button
-              className={`min-w-[138px] rounded-xl p-3 text-left ring-1 transition ${
+              className={`min-w-[138px] rounded-[3px] p-3 text-left ring-1 transition ${
                 index === activeIndex
-                  ? "bg-zinc-950 text-white ring-zinc-950"
-                  : "bg-white text-zinc-600 ring-zinc-950/[0.08] hover:bg-zinc-50"
+                  ? "bg-ink text-paper ring-ink"
+                  : "bg-card text-ink-2 ring-rule hover:bg-paper-2"
               }`}
               key={shot.shot_id}
               onClick={() => setActiveIndex(index)}
               type="button"
             >
-              <span className="text-[10px] font-semibold text-zinc-400">
+              <span className="text-[10px] font-semibold text-ink-3">
                 {String(index + 1).padStart(2, "0")} · {shot.duration_seconds}s · v{shot.revision}
               </span>
               <span className="mt-1 block truncate text-xs font-semibold">{shot.title}</span>
@@ -415,26 +415,26 @@ export function ProductionWorkspace({
         </div>
 
         {activeShot ? (
-          <article className="mt-4 overflow-hidden rounded-[18px] ring-1 ring-zinc-950/[0.08]">
-            <div className="flex flex-col gap-4 border-b border-zinc-950/[0.07] bg-zinc-950/[0.02] p-5 sm:flex-row sm:items-center sm:justify-between">
+          <article className="mt-4 overflow-hidden rounded-[4px] ring-1 ring-rule">
+            <div className="flex flex-col gap-4 border-b border-rule bg-ink/[0.02] p-5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-lg bg-blue-600 px-2 py-1 text-[10px] font-bold text-white">
+                  <span className="rounded-[3px] bg-verified px-2 py-1 text-[10px] font-bold text-paper">
                     {String(activeIndex + 1).padStart(2, "0")}
                   </span>
                   <h4 className="text-[17px] font-semibold">{activeShot.title}</h4>
-                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                  <span className="rounded-full bg-verified/[0.08] px-2 py-0.5 text-[10px] font-semibold text-verified">
                     {activeShot.duration_seconds} 秒 · ≤ 10 秒
                   </span>
-                  <span className="text-[10px] text-zinc-400">版本 {activeShot.revision}</span>
+                  <span className="text-[10px] text-ink-3">版本 {activeShot.revision}</span>
                 </div>
-                <p className="mt-2 text-xs text-zinc-500">
+                <p className="mt-2 text-xs text-ink-2">
                   {timecode(activeShot.start_second)}–{timecode(activeShot.end_second)} · {activeShot.visual_brief}
                 </p>
               </div>
               <div className="flex gap-2">
                 <button
-                  className="rounded-lg bg-white px-3 py-2 text-xs font-semibold ring-1 ring-zinc-950/10 disabled:opacity-35"
+                  className="rounded-lg bg-card px-3 py-2 text-xs font-semibold ring-1 ring-rule disabled:opacity-35"
                   disabled={activeIndex === 0}
                   onClick={() => setActiveIndex((index) => Math.max(index - 1, 0))}
                   type="button"
@@ -442,7 +442,7 @@ export function ProductionWorkspace({
                   上一镜头
                 </button>
                 <button
-                  className="rounded-lg bg-white px-3 py-2 text-xs font-semibold ring-1 ring-zinc-950/10 disabled:opacity-35"
+                  className="rounded-lg bg-card px-3 py-2 text-xs font-semibold ring-1 ring-rule disabled:opacity-35"
                   disabled={activeIndex === payload.shots.length - 1}
                   onClick={() => setActiveIndex((index) => Math.min(index + 1, payload.shots.length - 1))}
                   type="button"
@@ -456,23 +456,23 @@ export function ProductionWorkspace({
               {activeShot.narration || activeShot.dialogue ? (
                 <div className="mb-4 grid gap-3 sm:grid-cols-2">
                   {activeShot.narration ? (
-                    <div className="rounded-xl bg-zinc-50 p-3 text-xs leading-5 text-zinc-600">
-                      <span className="font-semibold text-zinc-900">逐字旁白</span><br />{activeShot.narration}
+                    <div className="rounded-[3px] bg-paper-2 p-3 text-xs leading-5 text-ink-2">
+                      <span className="font-semibold text-ink">逐字旁白</span><br />{activeShot.narration}
                     </div>
                   ) : null}
                   {activeShot.dialogue ? (
-                    <div className="rounded-xl bg-zinc-50 p-3 text-xs leading-5 text-zinc-600">
-                      <span className="font-semibold text-zinc-900">逐字对白</span><br />{activeShot.dialogue}
+                    <div className="rounded-[3px] bg-paper-2 p-3 text-xs leading-5 text-ink-2">
+                      <span className="font-semibold text-ink">逐字对白</span><br />{activeShot.dialogue}
                     </div>
                   ) : null}
                 </div>
               ) : null}
 
-              <label className="text-xs font-semibold text-zinc-700" htmlFor={`prompt-${activeShot.shot_id}`}>
+              <label className="text-xs font-semibold text-ink-2" htmlFor={`prompt-${activeShot.shot_id}`}>
                 可编辑提示词模板
               </label>
               <textarea
-                className="mt-2 min-h-[420px] w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 p-4 font-mono text-xs leading-6 text-zinc-700 outline-none focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100"
+                className="mt-2 min-h-[420px] w-full resize-y rounded-[3px] border border-rule bg-paper-2 p-4 font-mono text-xs leading-6 text-ink-2 outline-none focus:border-verified/40 focus:bg-card focus:ring-2 focus:ring-verified/20"
                 id={`prompt-${activeShot.shot_id}`}
                 onChange={(event) =>
                   setShotEdits((current) => ({
@@ -485,20 +485,20 @@ export function ProductionWorkspace({
                 }
                 value={activeTemplate}
               />
-              <p className="mt-2 text-[11px] leading-5 text-zinc-400">
+              <p className="mt-2 text-[11px] leading-5 text-ink-3">
                 复制时会自动把角色占位符替换为你填写的真实 @标签；未启用参考图时改用完整文字角色锚点。
               </p>
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
-                  className="rounded-xl bg-zinc-950 px-4 py-2.5 text-xs font-semibold text-white"
+                  className="rounded-[3px] bg-ink px-4 py-2.5 text-xs font-semibold text-paper"
                   onClick={() => void copyText(activeShot.shot_id, resolvedPrompt(activeShot, activeTemplate))}
                   type="button"
                 >
                   {copied === activeShot.shot_id ? "已复制，可直接生成" : "复制当前镜头"}
                 </button>
                 <button
-                  className="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white disabled:opacity-40"
+                  className="rounded-[3px] bg-ink px-4 py-2.5 text-xs font-semibold text-paper disabled:opacity-40"
                   disabled={Boolean(regenerating) || isRunning}
                   onClick={() => void regenerateActiveShot()}
                   type="button"
@@ -506,7 +506,7 @@ export function ProductionWorkspace({
                   {regenerating === activeShot.shot_id ? "正在重新优化…" : "重新优化当前镜头"}
                 </button>
                 <button
-                  className="rounded-xl bg-zinc-100 px-4 py-2.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-200"
+                  className="rounded-[3px] bg-paper-2 px-4 py-2.5 text-xs font-semibold text-ink-2 hover:bg-rule"
                   onClick={() =>
                     setShotEdits((current) => ({
                       ...current,
@@ -522,7 +522,7 @@ export function ProductionWorkspace({
                 </button>
               </div>
 
-              <div className="mt-5 flex flex-wrap gap-2 border-t border-zinc-950/[0.06] pt-4 font-mono text-[10px] text-zinc-400">
+              <div className="mt-5 flex flex-wrap gap-2 border-t border-rule pt-4 font-mono text-[10px] text-ink-3">
                 {activeShot.event_ids.map((id) => <span key={id}>{id}</span>)}
                 {activeShot.source_ids.map((id) => <span key={id}>{id}</span>)}
               </div>

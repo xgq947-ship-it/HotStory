@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 
 import { ApiError, api, apiConditional, scriptDownloadUrl } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { stepLabels } from "@/lib/pipeline";
 import type {
   Event,
   Fact,
@@ -19,23 +20,8 @@ import type {
 
 import { Brand } from "./Brand";
 import { ProductionWorkspace } from "./ProductionWorkspace";
+import { SettingsDialog } from "./SettingsDialog";
 import { StatusPill } from "./StatusPill";
-
-const stepLabels: Record<string, string> = {
-  plan: "研究计划",
-  search: "多轮搜索",
-  fetch: "获取正文",
-  extract: "提取事实",
-  cluster: "聚合事件",
-  verify: "交叉核验",
-  timeline: "构建时间线",
-  story: "故事分析",
-  value: "价值方向",
-  write: "编写剧本",
-  review: "质量审校",
-  production: "影视生成包",
-  export: "保存档案",
-};
 
 const tabs = ["概览", "时间线", "案例", "数据", "来源", "剧本", "影视生成"] as const;
 type Tab = (typeof tabs)[number];
@@ -54,6 +40,26 @@ function formatDate(value: string) {
 }
 
 const POLL_INTERVAL_MS = 2500;
+
+/** 每格盖一个读数：完成盖耗时，运行中盖 RUN，失败盖 ERR。 */
+function stepReadout(step: StatusPayload["steps"][number]): string {
+  if (step.status === "SUCCESS") {
+    if (step.started_at && step.completed_at) {
+      const seconds = Math.max(
+        0,
+        Math.round(
+          (new Date(step.completed_at).getTime() - new Date(step.started_at).getTime()) / 1000,
+        ),
+      );
+      const minutes = Math.floor(seconds / 60);
+      return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    }
+    return "OK";
+  }
+  if (step.status === "RUNNING") return "RUN";
+  if (step.status === "FAILED") return "ERR";
+  return "—";
+}
 
 /**
  * 每个 artifact 的"变没变"信号。以前每 2.5 秒把 7 个接口全量拉一遍
@@ -79,13 +85,13 @@ function artifactKeys(status: StatusPayload | null): Record<string, string> {
 function Metric({ label, value, target }: { label: string; value: number; target?: number }) {
   const reached = target === undefined || value >= target;
   return (
-    <div className="rounded-2xl bg-zinc-950/[0.025] p-4 ring-1 ring-zinc-950/[0.055]">
+    <div className="rounded-[4px] bg-paper-2 p-4 ring-1 ring-rule">
       <div className="flex items-baseline gap-1.5">
         <span className="text-2xl font-semibold tracking-[-0.04em] tabular-nums">{value}</span>
-        {target !== undefined ? <span className="text-xs text-zinc-400">/ {target}</span> : null}
+        {target !== undefined ? <span className="text-xs text-ink-3">/ {target}</span> : null}
       </div>
-      <div className="mt-1.5 flex items-center gap-1.5 text-xs text-zinc-500">
-        <span className={`size-1.5 rounded-full ${reached ? "bg-emerald-500" : "bg-amber-400"}`} />
+      <div className="mt-1.5 flex items-center gap-1.5 text-xs text-ink-2">
+        <span className={`size-1.5 rounded-full ${reached ? "bg-verified" : "bg-pending"}`} />
         {label}
       </div>
     </div>
@@ -105,6 +111,7 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const fetchedKeys = useRef<Record<string, string>>({});
   const etags = useRef<Record<string, string | null>>({});
@@ -312,9 +319,9 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
     return (
       <div className="grid min-h-screen place-items-center bg-[#f5f5f7]">
         <div className="text-center">
-          <div className="mx-auto size-7 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900" />
-          <p className="mt-4 text-sm text-zinc-500">正在打开研究档案…</p>
-          {error ? <p className="mt-2 text-sm text-red-600">{error}</p> : null}
+          <div className="mx-auto size-7 animate-spin rounded-full border-2 border-rule border-t-ink" />
+          <p className="mt-4 text-sm text-ink-2">正在打开研究档案…</p>
+          {error ? <p className="mt-2 text-sm text-pending">{error}</p> : null}
         </div>
       </div>
     );
@@ -325,41 +332,53 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
 
   return (
     <div className="min-h-screen">
-      <header className="glass-nav sticky top-0 z-30">
-        <div className="mx-auto flex h-16 max-w-[1280px] items-center justify-between gap-5 px-5 sm:px-8">
-          <div className="flex min-w-0 items-center gap-5">
+      <header className="bench-nav sticky top-0 z-30">
+        <div className="mx-auto flex h-14 max-w-[1280px] items-center justify-between gap-5 px-5 sm:px-8">
+          <div className="flex min-w-0 items-center gap-4">
             <Brand />
-            <span className="hidden h-5 w-px bg-zinc-950/10 sm:block" />
-            <span className="hidden max-w-[420px] truncate text-sm text-zinc-500 sm:block">{topic.title}</span>
+            <span className="hidden h-4 w-px bg-rule sm:block" />
+            <span className="hidden max-w-[420px] truncate text-[13px] text-ink-2 sm:block">
+              {topic.title}
+            </span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
             <StatusPill status={topic.status} />
-            <Link className="text-sm font-medium text-zinc-500 hover:text-zinc-900" href="/">
+            <button
+              className="gauge rounded-[4px] border border-rule px-2.5 py-1.5 text-ink-2 transition hover:border-ink hover:text-ink"
+              onClick={() => setSettingsOpen(true)}
+            >
+              设置
+            </button>
+            <Link className="gauge text-ink-3 transition hover:text-ink" href="/">
               关闭
             </Link>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1280px] px-5 pb-24 pt-10 sm:px-8 sm:pt-14">
-        <div className="grid gap-6 lg:grid-cols-[310px_minmax(0,1fr)]">
-          <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
-            <section className="surface rounded-[20px] p-5">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">Research file</p>
-              <h1 className="mt-3 text-[22px] font-semibold leading-8 tracking-[-0.035em]">{topic.title}</h1>
-              <p className="mt-3 text-xs leading-5 text-zinc-400">
-                创建于 {formatDate(topic.created_at)} · 深挖 {topic.research_depth} 次
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      <main className="mx-auto max-w-[1280px] px-5 pb-24 pt-9 sm:px-8 sm:pt-12">
+        <div className="grid gap-8 lg:grid-cols-[290px_minmax(0,1fr)]">
+          <aside className="space-y-5 lg:sticky lg:top-20 lg:self-start">
+            <section>
+              <p className="label">研究档案 / FILE</p>
+              <h1 className="mt-2.5 text-[19px] font-semibold leading-[1.4] tracking-[-0.025em]">
+                {topic.title}
+              </h1>
+              <p className="gauge mt-2.5 text-ink-3">
+                {formatDate(topic.created_at)} · 深挖 {topic.research_depth} 次
               </p>
 
               {error || topic.error ? (
-                <div className="mt-4 rounded-xl bg-red-50 p-3 text-xs leading-5 text-red-700 ring-1 ring-red-600/10">
+                <p className="mt-3 border-l-2 border-pending bg-pending/[0.07] px-3 py-2.5 text-[12.5px] leading-[1.6]">
                   {error ?? topic.error}
-                </div>
+                </p>
               ) : null}
 
               {topic.status === "CREATED" ? (
                 <button
-                  className="mt-5 w-full rounded-xl bg-zinc-950 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+                  className="mt-4 w-full rounded-[3px] border border-ink bg-ink px-4 py-2.5 text-[13px] font-medium text-paper transition hover:bg-ink-2 disabled:border-rule disabled:bg-transparent disabled:text-ink-3"
                   onClick={() => void start()}
                   disabled={busy}
                   type="button"
@@ -369,7 +388,7 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
               ) : null}
               {topic.status === "FAILED" ? (
                 <button
-                  className="mt-5 w-full rounded-xl bg-zinc-950 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+                  className="mt-4 w-full rounded-[3px] border border-ink bg-ink px-4 py-2.5 text-[13px] font-medium text-paper transition hover:bg-ink-2 disabled:border-rule disabled:bg-transparent disabled:text-ink-3"
                   onClick={() => void continueResearch()}
                   disabled={busy}
                   type="button"
@@ -379,49 +398,40 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
               ) : null}
             </section>
 
-            <section className="surface rounded-[20px] p-5">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-sm font-semibold">研究进度</h2>
-                {isRunning ? <span className="size-2 animate-pulse rounded-full bg-blue-500" /> : null}
+            {/* 证据链轨道：13 步排成片头引带，完成的格子盖上耗时。 */}
+            <section>
+              <div className="flex items-baseline justify-between border-b border-ink pb-1.5">
+                <p className="label !text-ink">证据链</p>
+                <span className="gauge text-ink-3">
+                  {status.steps.filter((step) => step.status === "SUCCESS").length}/
+                  {status.steps.length}
+                </span>
               </div>
-              <ol className="space-y-0.5">
-                {status.steps.map((step) => {
-                  const complete = step.status === "SUCCESS";
-                  const running = step.status === "RUNNING";
-                  const failed = step.status === "FAILED";
-                  return (
-                    <li className="flex min-h-8 items-center gap-3 text-xs" key={step.step}>
-                      <span
-                        className={`grid size-4 shrink-0 place-items-center rounded-full text-[9px] font-bold ${
-                          complete
-                            ? "bg-emerald-500 text-white"
-                            : running
-                              ? "bg-blue-500 text-white"
-                              : failed
-                                ? "bg-red-500 text-white"
-                                : "bg-zinc-100 text-zinc-400 ring-1 ring-zinc-950/5"
-                        }`}
-                      >
-                        {complete ? "✓" : running ? "•" : failed ? "!" : ""}
-                      </span>
-                      <span className={running ? "font-semibold text-zinc-900" : "text-zinc-500"}>
-                        {stepLabels[step.step] ?? step.step}
-                      </span>
-                    </li>
-                  );
-                })}
+              <ol className="leader mt-3">
+                {status.steps.map((step) => (
+                  <li className="frame" data-state={step.status} key={step.step}>
+                    <span
+                      className={`text-[12.5px] leading-[1.4] ${
+                        step.status === "PENDING" ? "text-ink-3" : "text-ink"
+                      }`}
+                    >
+                      {stepLabels[step.step] ?? step.step}
+                    </span>
+                    <span className="gauge text-ink-3">{stepReadout(step)}</span>
+                  </li>
+                ))}
               </ol>
             </section>
           </aside>
 
           <div className="min-w-0">
-            <section className="surface overflow-hidden rounded-[20px]">
-              <nav className="overflow-x-auto border-b border-zinc-950/[0.06] px-2" aria-label="研究档案导航">
+            <section className="sheet rounded-[4px]">
+              <nav className="overflow-x-auto border-b border-rule px-1.5" aria-label="研究档案导航">
                 <div className="flex min-w-max">
                   {tabs.map((tab) => (
                     <button
-                      className={`relative px-4 py-4 text-sm font-medium transition ${
-                        activeTab === tab ? "text-zinc-950" : "text-zinc-400 hover:text-zinc-700"
+                      className={`relative px-3.5 py-3 text-[13px] transition ${
+                        activeTab === tab ? "font-semibold text-ink" : "text-ink-3 hover:text-ink-2"
                       }`}
                       key={tab}
                       onClick={() => setActiveTab(tab)}
@@ -429,14 +439,14 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
                     >
                       {tab}
                       {activeTab === tab ? (
-                        <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-zinc-950" />
+                        <span className="absolute inset-x-2.5 -bottom-px h-0.5 bg-ink" />
                       ) : null}
                     </button>
                   ))}
                 </div>
               </nav>
 
-              <div className="p-5 sm:p-7 lg:p-9">
+              <div className="p-5 sm:p-7 lg:p-8">
                 {activeTab === "概览" ? (
                   <Overview
                     status={status}
@@ -494,10 +504,10 @@ function Overview({
     <div>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">Evidence dashboard</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Evidence dashboard</p>
           <h2 className="mt-2 text-[30px] font-semibold tracking-[-0.045em]">研究概览</h2>
         </div>
-        {isRunning ? <p className="text-xs text-blue-600">数据会随研究进度自动更新</p> : null}
+        {isRunning ? <p className="text-xs text-verified">数据会随研究进度自动更新</p> : null}
       </div>
 
       <div className="mt-7 grid grid-cols-2 gap-3 xl:grid-cols-4">
@@ -521,16 +531,16 @@ function Overview({
 
       {story ? (
         <div className="mt-8 grid gap-4 md:grid-cols-2">
-          <div className="rounded-[18px] bg-zinc-950 p-6 text-white">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">Central theme</p>
+          <div className="rounded-[4px] bg-ink p-6 text-paper">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Central theme</p>
             <h3 className="mt-3 text-[22px] font-semibold leading-8 tracking-[-0.03em]">{story.central_theme}</h3>
-            <p className="mt-4 text-sm leading-6 text-zinc-400">核心冲突：{story.core_conflict}</p>
+            <p className="mt-4 text-sm leading-6 text-ink-3">核心冲突：{story.core_conflict}</p>
           </div>
-          <div className="rounded-[18px] bg-zinc-950/[0.025] p-6 ring-1 ring-zinc-950/[0.055]">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">Story arc</p>
+          <div className="rounded-[4px] bg-paper-2 p-6 ring-1 ring-rule">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Story arc</p>
             <div className="mt-4 flex flex-wrap gap-2">
               {story.story_arc.map((stage, index) => (
-                <span className="rounded-full bg-white px-3 py-1.5 text-xs font-medium ring-1 ring-zinc-950/[0.07]" key={`${stage.stage}-${index}`}>
+                <span className="rounded-full bg-card px-3 py-1.5 text-xs font-medium ring-1 ring-rule" key={`${stage.stage}-${index}`}>
                   {stage.stage}
                 </span>
               ))}
@@ -538,7 +548,7 @@ function Overview({
           </div>
         </div>
       ) : (
-        <div className="subtle-grid mt-8 rounded-[18px] border border-dashed border-zinc-300 px-6 py-12 text-center text-sm text-zinc-400">
+        <div className="mt-8 rounded-[4px] border border-dashed border-rule px-6 py-12 text-center text-sm text-ink-3">
           {isRunning ? "故事主线会在事实与时间线核验完成后出现。" : "尚未生成故事主线。"}
         </div>
       )}
@@ -547,15 +557,15 @@ function Overview({
         <div className="mt-8">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold">代表事件</h3>
-            <span className="text-xs text-zinc-400">共 {events.length} 个</span>
+            <span className="text-xs text-ink-3">共 {events.length} 个</span>
           </div>
-          <div className="divide-y divide-zinc-950/[0.06] rounded-[16px] ring-1 ring-zinc-950/[0.06]">
+          <div className="divide-y divide-rule rounded-[4px] ring-1 ring-rule">
             {events.slice(0, 5).map((event) => (
               <div className="grid gap-1 px-4 py-3.5 sm:grid-cols-[90px_1fr]" key={event.id}>
-                <span className="text-xs tabular-nums text-zinc-400">{event.date || "时间待定"}</span>
+                <span className="text-xs tabular-nums text-ink-3">{event.date || "时间待定"}</span>
                 <div>
                   <p className="text-sm font-medium">{event.title}</p>
-                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-zinc-500">{event.summary}</p>
+                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-ink-2">{event.summary}</p>
                 </div>
               </div>
             ))}
@@ -571,17 +581,17 @@ function TimelineView({ timeline, eventMap }: { timeline: TimelinePayload | null
   return (
     <div>
       <SectionTitle eyebrow="Chronology" title="时间线" note={`${timeline.timeline.length} 个关键节点`} />
-      <ol className="relative mt-9 space-y-0 before:absolute before:bottom-4 before:left-[7px] before:top-3 before:w-px before:bg-zinc-200">
+      <ol className="relative mt-9 space-y-0 before:absolute before:bottom-4 before:left-[7px] before:top-3 before:w-px before:bg-rule">
         {timeline.timeline.map((item, index) => (
           <li className="relative grid gap-3 pb-8 pl-9 sm:grid-cols-[120px_1fr] sm:gap-5" key={`${item.date}-${index}`}>
-            <span className="absolute left-0 top-1.5 size-[15px] rounded-full border-[4px] border-white bg-blue-500 shadow-sm ring-1 ring-blue-600/20" />
-            <time className="text-xs font-semibold tabular-nums text-zinc-400">{item.date || "时间待定"}</time>
+            <span className="absolute left-0 top-1.5 size-[15px] rounded-full border-[4px] border-card bg-ink shadow-sm ring-1 ring-verified/25" />
+            <time className="text-xs font-semibold tabular-nums text-ink-3">{item.date || "时间待定"}</time>
             <div>
               <h3 className="text-[17px] font-semibold tracking-[-0.02em]">{item.title}</h3>
-              <p className="mt-2 text-sm leading-6 text-zinc-500">{item.description}</p>
+              <p className="mt-2 text-sm leading-6 text-ink-2">{item.description}</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {item.event_ids.map((id) => (
-                  <span className="rounded-md bg-zinc-100 px-2 py-1 font-mono text-[10px] text-zinc-500" title={eventMap.get(id)?.title} key={id}>
+                  <span className="rounded-md bg-paper-2 px-2 py-1 font-mono text-[10px] text-ink-2" title={eventMap.get(id)?.title} key={id}>
                     {id}
                   </span>
                 ))}
@@ -601,30 +611,30 @@ function CasesView({ cases, sourceMap }: { cases: Fact[]; sourceMap: Map<string,
       <SectionTitle eyebrow="People" title="真实案例" note={`${cases.length} 个已核验案例`} />
       <div className="mt-8 grid gap-4 md:grid-cols-2">
         {cases.map((fact, index) => (
-          <article className="rounded-[18px] bg-zinc-950/[0.025] p-5 ring-1 ring-zinc-950/[0.06]" key={fact.id}>
+          <article className="rounded-[4px] bg-paper-2 p-5 ring-1 ring-rule" key={fact.id}>
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">Case {String(index + 1).padStart(2, "0")}</span>
-              <span className="text-xs font-semibold text-emerald-700">可信度 {confidenceLabel(fact.confidence)}</span>
+              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-3">Case {String(index + 1).padStart(2, "0")}</span>
+              <span className="text-xs font-semibold text-verified">可信度 {confidenceLabel(fact.confidence)}</span>
             </div>
             <h3 className="mt-4 text-[17px] font-semibold leading-7 tracking-[-0.015em]">
               {fact.people[0] || "来源中的真实当事人"}
             </h3>
-            <p className="mt-3 text-sm leading-6 text-zinc-600">{fact.statement}</p>
-            <dl className="mt-5 grid grid-cols-[58px_1fr] gap-y-2 border-t border-zinc-950/[0.07] pt-4 text-xs">
-              <dt className="text-zinc-400">时间</dt>
-              <dd className="text-zinc-600">{fact.date || "来源未明确"}</dd>
-              <dt className="text-zinc-400">地点</dt>
-              <dd className="text-zinc-600">{fact.locations.join("、") || "来源未明确"}</dd>
-              <dt className="text-zinc-400">来源</dt>
+            <p className="mt-3 text-sm leading-6 text-ink-2">{fact.statement}</p>
+            <dl className="mt-5 grid grid-cols-[58px_1fr] gap-y-2 border-t border-rule pt-4 text-xs">
+              <dt className="text-ink-3">时间</dt>
+              <dd className="text-ink-2">{fact.date || "来源未明确"}</dd>
+              <dt className="text-ink-3">地点</dt>
+              <dd className="text-ink-2">{fact.locations.join("、") || "来源未明确"}</dd>
+              <dt className="text-ink-3">来源</dt>
               <dd className="flex flex-wrap gap-x-2 gap-y-1">
                 {fact.source_ids.map((id) => {
                   const source = sourceMap.get(id);
                   return source ? (
-                    <a className="text-blue-600 hover:underline" href={source.url} target="_blank" rel="noreferrer" key={id}>
+                    <a className="text-verified hover:underline" href={source.url} target="_blank" rel="noreferrer" key={id}>
                       {source.publisher || source.title}
                     </a>
                   ) : (
-                    <span className="font-mono text-zinc-400" key={id}>{id}</span>
+                    <span className="font-mono text-ink-3" key={id}>{id}</span>
                   );
                 })}
               </dd>
@@ -643,18 +653,18 @@ function DataView({ facts, sourceMap }: { facts: Fact[]; sourceMap: Map<string, 
       <SectionTitle eyebrow="Verified data" title="关键数据" note={`${facts.length} 条已核验数据`} />
       <div className="mt-8 space-y-3">
         {facts.map((fact) => (
-          <article className="grid gap-4 rounded-[16px] p-5 ring-1 ring-zinc-950/[0.065] sm:grid-cols-[150px_1fr]" key={fact.id}>
+          <article className="grid gap-4 rounded-[4px] p-5 ring-1 ring-rule sm:grid-cols-[150px_1fr]" key={fact.id}>
             <div>
-              <p className="text-2xl font-semibold tracking-[-0.04em] text-blue-600">{fact.numbers[0] || "数据"}</p>
-              <p className="mt-1 text-xs text-zinc-400">{fact.date || "日期见来源"}</p>
+              <p className="text-2xl font-semibold tracking-[-0.04em] text-verified">{fact.numbers[0] || "数据"}</p>
+              <p className="mt-1 text-xs text-ink-3">{fact.date || "日期见来源"}</p>
             </div>
             <div>
-              <p className="text-sm leading-6 text-zinc-700">{fact.statement}</p>
+              <p className="text-sm leading-6 text-ink-2">{fact.statement}</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {fact.source_ids.map((id) => {
                   const source = sourceMap.get(id);
                   return source ? (
-                    <a className="text-xs text-blue-600 hover:underline" href={source.url} target="_blank" rel="noreferrer" key={id}>
+                    <a className="text-xs text-verified hover:underline" href={source.url} target="_blank" rel="noreferrer" key={id}>
                       {source.publisher || source.title}
                     </a>
                   ) : null;
@@ -675,27 +685,27 @@ function SourcesView({ sources, facts }: { sources: Source[]; facts: Fact[] }) {
   return (
     <div>
       <SectionTitle eyebrow="Traceability" title="全部来源" note={`${sources.length} 个独立页面`} />
-      <div className="mt-8 divide-y divide-zinc-950/[0.06] rounded-[16px] ring-1 ring-zinc-950/[0.06]">
+      <div className="mt-8 divide-y divide-rule rounded-[4px] ring-1 ring-rule">
         {sources.map((source) => (
           <article className="p-4 sm:p-5" key={source.id}>
             <div className="flex items-start gap-4">
-              <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-zinc-100 text-[11px] font-bold uppercase text-zinc-500">
+              <div className="grid size-9 shrink-0 place-items-center rounded-[3px] bg-paper-2 text-[11px] font-bold uppercase text-ink-2">
                 {(source.publisher || "WEB").slice(0, 2)}
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <a className="line-clamp-2 text-sm font-semibold leading-6 hover:text-blue-600" href={source.url} target="_blank" rel="noreferrer">
+                  <a className="line-clamp-2 text-sm font-semibold leading-6 hover:text-verified" href={source.url} target="_blank" rel="noreferrer">
                     {source.title || source.url}
                   </a>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${source.fetch_status === "SUCCESS" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${source.fetch_status === "SUCCESS" ? "bg-verified/[0.08] text-verified" : "bg-pending/[0.07] text-pending"}`}>
                     {source.fetch_status === "SUCCESS" ? "正文已保存" : "抓取失败"}
                   </span>
                 </div>
-                <p className="mt-1 text-xs text-zinc-400">
+                <p className="mt-1 text-xs text-ink-3">
                   {source.publisher || "未知发布者"} · {source.published_at || "日期未知"} · 可信度 {Math.round(source.credibility_score * 100)}
                 </p>
-                {source.snippet ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500">{source.snippet}</p> : null}
-                <div className="mt-2 flex flex-wrap gap-2 font-mono text-[10px] text-zinc-400">
+                {source.snippet ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-ink-2">{source.snippet}</p> : null}
+                <div className="mt-2 flex flex-wrap gap-2 font-mono text-[10px] text-ink-3">
                   <span>{source.id}</span>
                   <span>支持 {factCounts.get(source.id) ?? 0} 条事实</span>
                   {source.crawler ? <span>{source.crawler}</span> : null}
@@ -727,12 +737,12 @@ function ScriptView({
   if (!payload) return <Empty message="剧本会在素材达到最低标准并通过质量审校后出现。" />;
   return (
     <div>
-      <div className="flex flex-col gap-4 border-b border-zinc-950/[0.07] pb-6 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 border-b border-rule pb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">Final script</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Final script</p>
             {payload.review ? (
-              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${payload.review.passed ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${payload.review.passed ? "bg-verified/[0.08] text-verified" : "bg-pending/[0.07] text-pending"}`}>
                 质量 {payload.review.score} 分
               </span>
             ) : null}
@@ -740,20 +750,20 @@ function ScriptView({
           <h2 className="mt-2 text-[30px] font-semibold tracking-[-0.045em]">纪录片式剧本</h2>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button className="rounded-xl bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-200" onClick={onCopy} type="button">
+          <button className="rounded-[3px] bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule" onClick={onCopy} type="button">
             {copied ? "已复制" : "复制"}
           </button>
-          <a className="rounded-xl bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-200" href={scriptDownloadUrl(topicId)}>
+          <a className="rounded-[3px] bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule" href={scriptDownloadUrl(topicId)}>
             导出 Markdown
           </a>
         </div>
       </div>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">
-        <span className="mr-1 text-xs text-zinc-400">重新生成</span>
+        <span className="mr-1 text-xs text-ink-3">重新生成</span>
         {([60, 90, 180] as const).map((duration) => (
           <button
-            className="rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-zinc-950/10 hover:bg-zinc-50 disabled:opacity-40"
+            className="rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-rule hover:bg-paper-2 disabled:opacity-40"
             disabled={busy}
             key={duration}
             onClick={() => onRewrite(duration)}
@@ -765,7 +775,7 @@ function ScriptView({
       </div>
 
       {payload.review?.issues.length ? (
-        <div className="mt-5 rounded-xl bg-amber-50 p-4 text-xs leading-5 text-amber-800">
+        <div className="mt-5 rounded-[3px] bg-pending/[0.07] p-4 text-xs leading-5 text-amber-800">
           {payload.review.issues.join("；")}
         </div>
       ) : null}
@@ -781,17 +791,17 @@ function SectionTitle({ eyebrow, title, note }: { eyebrow: string; title: string
   return (
     <div className="flex items-end justify-between gap-4">
       <div>
-        <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-zinc-400">{eyebrow}</p>
+        <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">{eyebrow}</p>
         <h2 className="mt-2 text-[30px] font-semibold tracking-[-0.045em]">{title}</h2>
       </div>
-      <p className="text-xs text-zinc-400">{note}</p>
+      <p className="text-xs text-ink-3">{note}</p>
     </div>
   );
 }
 
 function Empty({ message }: { message: string }) {
   return (
-    <div className="subtle-grid grid min-h-72 place-items-center rounded-[18px] border border-dashed border-zinc-300 px-6 text-center text-sm text-zinc-400">
+    <div className="grid min-h-72 place-items-center rounded-[4px] border border-dashed border-rule px-6 text-center text-sm text-ink-3">
       {message}
     </div>
   );

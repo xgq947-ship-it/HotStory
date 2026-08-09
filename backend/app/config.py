@@ -99,6 +99,15 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    settings = Settings()
+    # 延迟导入：settings_store 需要 Settings 与 PROJECT_ROOT，直接 import 会成环。
+    from app.services.settings_store import build_settings
+
+    settings = build_settings()
     settings.prepare_directories()
     return settings
+
+
+def reload_settings() -> Settings:
+    """设置界面写盘后调用。缓存不清掉的话，旧的 Key 会一直被用下去。"""
+    get_settings.cache_clear()
+    return get_settings()

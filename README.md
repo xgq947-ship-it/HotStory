@@ -51,15 +51,19 @@ Character Assets → Shot Plan（≤10s）→ Cinematic Prompts
 
 ## 快速启动
 
-macOS 可以直接双击项目根目录的 `HotStory.app`。应用会自动启动前后端并打开浏览器，退出应用时会停止由它启动的服务。
+先生成应用（首次克隆后执行一次），之后双击项目根目录的 `HotStory.app` 即可：
 
-双击版跑的是**生产模式**（`next start` + 不带 `--reload` 的 uvicorn），启动器会在需要时自动构建前端；它还会校验 `node_modules` 与当前 node 的架构是否一致，不一致就重装（避免 Apple Silicon 上装出 x64 原生模块）。修改启动器或前端后重新生成：
+`HotStory.app` 是自包含的：`Contents/Resources` 里带着后端源码和前端静态产物，首次启动会在 `~/Library/Application Support/HotStory` 下建一个 Python 环境（有 uv 时会自动下载 Python 3.12），之后每次只拉起**一个进程**——FastAPI 同时提供 API 和界面，运行时不需要 Node。数据、配置与日志都在同一个应用支持目录，所以 `.app` 可以随便移动、覆盖安装不丢数据。
 
 ```bash
 ./scripts/build_app.sh
 ```
 
-日志写在 `data/hotstory-app.log`，超过 10MB 自动滚动保留最近 3 份；后端日志是 JSON 行，默认不记录逐条 HTTP 访问日志（需要时设 `ACCESS_LOG=true`）。
+`HotStory.app` 是构建产物，不进版本库；改完代码重新执行上面的命令即可。
+
+日志写在数据目录的 `hotstory-app.log`，超过 10MB 自动滚动保留最近 3 份；后端日志是 JSON 行，默认不记录逐条 HTTP 访问日志（需要时设 `ACCESS_LOG=true`）。
+
+API Key、Codex CLI 路径、质量阈值等都可以在应用内的**设置**界面填写（右上角「设置」）。手动填写的值存在数据目录的 `config/settings.json`（仅属主可读写），优先级高于 `.env` 和环境变量，保存后立即生效，不需要重启。密钥只以掩码回传，明文不出后端。
 
 开发时用 `./scripts/dev.sh`，它跑的是带热重载的开发模式。也可以在终端运行：
 

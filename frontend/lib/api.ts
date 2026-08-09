@@ -1,5 +1,6 @@
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000/api";
+// 打包后前后端同源，用相对路径即可——省掉 CORS 预检和写死的主机端口。
+// 开发时 next dev 与后端不同端口，用 NEXT_PUBLIC_API_BASE_URL 覆盖。
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "/api";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 

@@ -207,3 +207,50 @@ export interface HealthPayload {
   llm_probe_ok?: boolean | null;
   llm_probe_error?: string | null;
 }
+
+export interface SettingFieldState {
+  name: string;
+  label: string;
+  group: string;
+  kind: "text" | "password" | "number" | "boolean" | "select";
+  secret: boolean;
+  options: string[];
+  help: string;
+  placeholder: string;
+  restart_required: boolean;
+  editable: boolean;
+  value: string | number | boolean | null;
+  configured: boolean;
+  source: "manual" | "env" | "env_file" | "default";
+}
+
+export interface SettingsPayload {
+  groups: Record<string, string>;
+  fields: SettingFieldState[];
+  version: string;
+  repository_url: string;
+}
+
+export interface CodexStatus {
+  available: boolean;
+  path: string;
+  version: string;
+  error: string;
+  searched: string[];
+}
+
+export interface ReleaseInfo {
+  tag_name: string;
+  name: string;
+  html_url: string;
+  body: string;
+  published_at: string;
+}
+
+export interface UpdateCheckPayload {
+  current_version: string;
+  latest: ReleaseInfo | null;
+  update_available: boolean;
+  releases: ReleaseInfo[];
+  error: string;
+}

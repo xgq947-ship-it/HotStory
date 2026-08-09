@@ -9,13 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
 from app import __version__
-from app.api import router
+from app.api import router, settings_api
 from app.config import get_settings
 from app.db import SessionLocal, checkpoint_wal, init_db
 from app.logging_utils import configure_logging
 from app.services.artifacts import ProjectStore
 from app.services.integrations import create_hotspot_provider
 from app.services.pipeline import Pipeline, PipelineRunner, recover_interrupted_topics
+from app.webui import mount_webui
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,12 @@ app.add_middleware(
 # 2048 以下不压缩：/status 这类高频小响应压了纯粹是浪费事件循环上的 CPU。
 app.add_middleware(GZipMiddleware, minimum_size=2048)
 app.include_router(router)
+app.include_router(settings_api)
 
 
-@app.get("/")
-def root() -> dict[str, str]:
-    return {"name": "HotStory", "docs": "/docs", "health": "/api/health"}
+# 必须放在所有 API 路由之后：catch-all 会吞掉后面注册的一切。
+if not mount_webui(app):
+
+    @app.get("/")
+    def root() -> dict[str, str]:
+        return {"name": "HotStory", "docs": "/docs", "health": "/api/health"}

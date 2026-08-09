@@ -10,6 +10,8 @@ backend/.mypy_cache/
 backend/**/__pycache__/
 backend/**/*.py[cod]
 frontend/.next/
+# 静态导出产物，由 npm run build 生成
+frontend/out/
 frontend/node_modules/
 frontend/.env.local
 frontend/*.tsbuildinfo
@@ -25,3 +27,6 @@ data/hotstory.db-*
 data/.node-arch
 data/projects/*
 !data/projects/.gitkeep
+
+# 打包产物：由 scripts/build_app.sh 生成，且运行时会在包内写 __pycache__
+HotStory.app/

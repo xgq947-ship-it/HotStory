@@ -18,18 +18,20 @@ const labels: Record<TopicStatus, string> = {
   FAILED: "需要处理",
 };
 
+/** 颜色只表示核验状态，不做装饰：绿=成稿可信，赭=需要人介入，黑=在跑。 */
 export function StatusPill({ status }: { status: TopicStatus }) {
-  const color =
+  const tone =
     status === "COMPLETED"
-      ? "bg-emerald-50 text-emerald-700 ring-emerald-600/15"
+      ? "border-verified text-verified"
       : status === "FAILED"
-        ? "bg-red-50 text-red-700 ring-red-600/15"
+        ? "border-pending text-pending"
         : status === "CREATED"
-          ? "bg-zinc-100 text-zinc-600 ring-zinc-500/10"
-          : "bg-blue-50 text-blue-700 ring-blue-600/15";
+          ? "border-rule text-ink-3"
+          : "border-ink text-ink";
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset ${color}`}>
-      <span className="size-1.5 rounded-full bg-current opacity-75" />
+    <span
+      className={`gauge inline-flex shrink-0 items-center gap-1.5 border-l-2 py-0.5 pl-2 ${tone}`}
+    >
       {labels[status]}
     </span>
   );

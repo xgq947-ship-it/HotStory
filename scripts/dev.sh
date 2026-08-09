@@ -53,6 +53,8 @@ backend_pid=$!
 
 (
   cd "$FRONTEND_DIR"
+  # 打包后前后端同源，api.ts 默认走相对路径；开发时两个端口，必须显式指向后端。
+  export NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8000/api"
   exec npm run dev -- --hostname 127.0.0.1 --port 3000
 ) &
 frontend_pid=$!
