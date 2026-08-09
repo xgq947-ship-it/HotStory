@@ -33,7 +33,7 @@ def frontend_dir() -> Path | None:
 def mount_webui(app: FastAPI) -> bool:
     directory = frontend_dir()
     if directory is None:
-        logger.info("未找到前端静态产物，只提供 API；开发模式请用 next dev")
+        logger.info("未找到前端静态产物，只提供 API；请运行 npm run runtime:webui")
         return False
 
     app.mount(

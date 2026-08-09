@@ -5,7 +5,6 @@ import platform
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
 from app import __version__
@@ -64,21 +63,6 @@ app = FastAPI(
     description="热点深度研究、事实核验、时间线与纪录片剧本生成",
     version=__version__,
     lifespan=lifespan,
-)
-settings = get_settings()
-origins = {
-    settings.frontend_origin,
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-}
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=sorted(origins),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    # ETag 不在 CORS 安全名单里，不显式暴露的话浏览器读不到，条件请求就永远失效。
-    expose_headers=["ETag"],
 )
 # 2048 以下不压缩：/status 这类高频小响应压了纯粹是浪费事件循环上的 CPU。
 app.add_middleware(GZipMiddleware, minimum_size=2048)

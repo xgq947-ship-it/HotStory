@@ -19,10 +19,6 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    app_env: str = "development"
-    app_host: str = "127.0.0.1"
-    app_port: int = 8000
-    frontend_origin: str = "http://localhost:3000"
     log_level: str = "INFO"
     access_log: bool = False
 

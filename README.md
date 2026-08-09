@@ -1,6 +1,6 @@
 # HotStory
 
-HotStory 是一个 macOS 本地运行的热点纪实剧本生成器。它先研究和核验事实，再组织时间线、真实案例、故事主线与价值方向，最终生成每个关键表达都能回溯到 `event_id` / `source_id` 的纪录片式短视频剧本。
+HotStory 是一个在 macOS 与 Windows 本地运行的热点纪实剧本生成器。它先研究和核验事实，再组织时间线、真实案例、故事主线与价值方向，最终生成每个关键表达都能回溯到 `event_id` / `source_id` 的纪录片式短视频剧本。
 
 > AI 负责搜索、提取、归纳、组织和表达，不负责创造现实世界中没有发生过的事实。
 
@@ -41,53 +41,53 @@ Character Assets → Shot Plan（≤10s）→ Cinematic Prompts
 
 第三方项目均通过 Library、HTTP API、Adapter 或 Provider 接入，不复制其源码。版本与 License 见 [THIRD_PARTY.md](./THIRD_PARTY.md)。
 
-## 环境要求
+## 安装发行版
 
-- macOS
+从 [GitHub Releases](https://github.com/xgq947-ship-it/HotStory/releases/latest) 下载对应安装包：
+
+- macOS Apple 芯片：`HotStory_*_aarch64.dmg`
+- Windows x64：`HotStory_*_windows-x86_64-setup.exe`
+
+首个版本尚未购买 Apple / Windows 商业代码签名证书。macOS 首次启动时需要右键应用选择“打开”，Windows 可能显示 SmartScreen 提示；安装包本身由 GitHub Actions 原生构建，并使用 Tauri 更新签名校验后续升级。
+
+## 源码环境要求
+
+- macOS（项目内双击调试启动器仅支持 macOS）
 - Python 3.12+
 - Node.js 20+（已在 Node.js 24 验证）
 - npm 10+
+- Rust stable / Cargo（用于双击启动 Tauri 调试窗口）
 - [uv](https://docs.astral.sh/uv/)
 
 ## 快速启动
 
 先生成应用（首次克隆后执行一次），之后双击项目根目录的 `HotStory.app` 即可：
 
-`HotStory.app` 是自包含的：`Contents/Resources` 里带着后端源码和前端静态产物，首次启动会在 `~/Library/Application Support/HotStory` 下建一个 Python 环境（有 uv 时会自动下载 Python 3.12），之后每次只拉起**一个进程**——FastAPI 同时提供 API 和界面，运行时不需要 Node。数据、配置与日志都在同一个应用支持目录，所以 `.app` 可以随便移动、覆盖安装不丢数据。
+项目根目录的 `HotStory.app` 是调试启动器，不会安装到电脑，也不会生成 DMG。双击后会同步当前前后端源码并运行 `tauri dev`，打开独立 HotStory 应用窗口，不会跳到外部浏览器。数据与配置继续保存在 `~/Library/Application Support/HotStory`。
 
 ```bash
 ./scripts/build_app.sh
 ```
 
-`HotStory.app` 是构建产物，不进版本库；改完代码重新执行上面的命令即可。
+`HotStory.app` 是构建产物，不进版本库；启动器只需生成一次，之后修改代码仍可直接双击它运行当前源码。
 
-日志写在数据目录的 `hotstory-app.log`，超过 10MB 自动滚动保留最近 3 份；后端日志是 JSON 行，默认不记录逐条 HTTP 访问日志（需要时设 `ACCESS_LOG=true`）。
+启动日志写在项目的 `data/hotstory-dev-app.log`，超过 10MB 自动滚动；后端默认不记录逐条 HTTP 访问日志（需要时设 `ACCESS_LOG=true`）。
 
 API Key、Codex CLI 路径、质量阈值等都可以在应用内的**设置**界面填写（右上角「设置」）。手动填写的值存在数据目录的 `config/settings.json`（仅属主可读写），优先级高于 `.env` 和环境变量，保存后立即生效，不需要重启。密钥只以掩码回传，明文不出后端。
 
-开发时用 `./scripts/dev.sh`，它跑的是带热重载的开发模式。也可以在终端运行：
-
-项目已经创建好 Python 3.12 虚拟环境和前端依赖，直接运行：
+需要从终端启动同一套 App 调试流程时运行：
 
 ```bash
 cd /Users/dasheng/Desktop/HotStory
-./scripts/dev.sh
+npm run desktop:dev
 ```
 
-打开：
-
-- UI：<http://127.0.0.1:3000>
-- API 文档：<http://127.0.0.1:8000/docs>
-- 健康检查：<http://127.0.0.1:8000/api/health>
-
-首次在其他机器安装：
+首次在其他机器准备调试依赖：
 
 ```bash
-cd backend
-uv venv .venv --python 3.12
-uv pip install --python .venv/bin/python -r requirements.txt
-
-cd ../frontend
+cd /Users/dasheng/Desktop/HotStory
+npm install
+cd frontend
 npm install
 ```
 
@@ -294,11 +294,11 @@ GET  /api/hotspots
 
 **部分网页抓取失败**：这是正常现象，系统会记录错误并继续其他来源。动态页面可安装 Crawl4AI 与 Chromium。
 
-**服务意外退出**：重新运行 `./scripts/dev.sh` 或重新打开 `HotStory.app`，打开原 Topic 后点击继续。成功步骤不会重复消耗 API。正常关闭时在跑的任务会被标成"已中断"，同样可以继续。
+**服务意外退出**：重新打开 `HotStory.app`，进入原 Topic 后点击继续。成功步骤不会重复消耗 API。正常关闭时在跑的任务会被标成“已中断”，同样可以继续。
 
 **提示"已有任务在运行"**：本地默认同时只跑一条管道（`MAX_CONCURRENT_PIPELINES`），等当前主题结束再开下一个。
 
-**端口被占用**：关闭占用 8000 或 3000 的本地进程后重启。
+**窗口启动失败**：查看 `data/hotstory-dev-app.log`；Tauri 每次自动选择空闲端口，不需要手动处理固定端口冲突。
 
 **前端报 `Cannot find module '../lightningcss.darwin-*.node'`**：`node_modules` 的架构和当前 node 不一致。启动器会自动重装；手动修复用 `rm -rf frontend/node_modules && npm install`（Apple Silicon 上确保用 arm64 的 node）。
 

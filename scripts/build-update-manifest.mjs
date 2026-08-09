@@ -28,7 +28,6 @@ const downloadBase = `https://github.com/${repository}/releases/download/${tag}`
 /** Tauri 用的平台标识，和产物所在的 target 目录对应。 */
 const PLATFORMS = [
   { key: "darwin-aarch64", target: "aarch64-apple-darwin", suffix: ".app.tar.gz" },
-  { key: "darwin-x86_64", target: "x86_64-apple-darwin", suffix: ".app.tar.gz" },
   { key: "windows-x86_64", target: "x86_64-pc-windows-msvc", suffix: "-setup.exe" },
 ];
 
@@ -55,8 +54,7 @@ for (const { key, target, suffix } of PLATFORMS) {
     console.warn(`跳过 ${key}：缺少产物或签名`);
     continue;
   }
-  // 两个 macOS 架构的更新包都叫 HotStory.app.tar.gz，
-  // 传到同一个 Release 会互相覆盖，所以按平台改名后再发。
+  // 统一按平台改名，避免不同 runner 的默认文件名互相覆盖。
   const renamed = `HotStory_${version}_${key}${suffix}`;
   copyFileSync(archive, join(outputDir, renamed));
   platforms[key] = {
@@ -66,8 +64,9 @@ for (const { key, target, suffix } of PLATFORMS) {
   console.log(`收录 ${key} ← ${archive.split("/").pop()} → ${renamed}`);
 }
 
-if (Object.keys(platforms).length === 0) {
-  throw new Error("没有任何平台产物，拒绝生成空清单");
+if (Object.keys(platforms).length !== PLATFORMS.length) {
+  const missing = PLATFORMS.filter(({ key }) => !platforms[key]).map(({ key }) => key);
+  throw new Error(`平台产物不完整，缺少：${missing.join(", ")}`);
 }
 
 const manifest = {

@@ -39,6 +39,9 @@
       "icons/icon.ico",
       "icons/128x128.png"
     ],
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "createUpdaterArtifacts": true
   },
   "plugins": {

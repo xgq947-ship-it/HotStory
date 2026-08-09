@@ -1,6 +1,5 @@
-// 打包后前后端同源，用相对路径即可——省掉 CORS 预检和写死的主机端口。
-// 开发时 next dev 与后端不同端口，用 NEXT_PUBLIC_API_BASE_URL 覆盖。
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "/api";
+// Tauri 窗口与 FastAPI 静态页面始终同源，不接受外部地址覆盖。
+const API_BASE = "/api";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -31,8 +30,7 @@ function withTimeout(init?: ApiInit): { init: RequestInit; done: () => void } {
 }
 
 /**
- * 只在真的有请求体时才带 Content-Type。GET 上带它会让请求变成"非简单请求"，
- * 每个 GET 前面都要多一次 CORS 预检 OPTIONS（实测请求数直接翻倍）。
+ * 只在真的有请求体时才带 Content-Type，避免给 GET 添加无意义的请求头。
  */
 function jsonHeaders(init?: ApiInit): HeadersInit | undefined {
   const hasBody = init?.body !== undefined && init?.body !== null;

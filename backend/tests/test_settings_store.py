@@ -110,8 +110,8 @@ class _Request:
 
 
 def test_settings_endpoints_reject_remote_origins() -> None:
-    local_only(_Request("http://localhost:3000"))  # type: ignore[arg-type]
-    local_only(_Request("http://127.0.0.1:3000"))  # type: ignore[arg-type]
+    local_only(_Request("http://127.0.0.1:63115"))  # type: ignore[arg-type]
+    local_only(_Request("tauri://localhost"))  # type: ignore[arg-type]
     local_only(_Request(None))  # type: ignore[arg-type]
     with pytest.raises(HTTPException) as error:
         local_only(_Request("https://evil.example.com"))  # type: ignore[arg-type]

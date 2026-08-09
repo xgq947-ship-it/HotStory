@@ -1,51 +1,58 @@
 #!/usr/bin/env bash
-# 生成自包含的 HotStory.app。
-#
-# 产物结构：
-#   HotStory.app/Contents/MacOS/HotStory   启动器
-#   HotStory.app/Contents/Resources/backend  后端源码
-#   HotStory.app/Contents/Resources/webui    前端静态产物
-#
-# 运行时只需要 uv 或系统 Python 3.12+，不需要 Node。
+# 生成项目内的 HotStory 调试启动器；它不安装应用，也不构建 DMG。
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 APP_DIR="$ROOT_DIR/HotStory.app"
-FRONTEND_DIR="$ROOT_DIR/frontend"
-RESOURCES="$APP_DIR/Contents/Resources"
+ICON_SOURCE="$ROOT_DIR/src-tauri/icons/icon.icns"
+STAGING_DIR=""
 
-echo "→ 构建前端静态产物"
-if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
-  (cd "$FRONTEND_DIR" && npm install)
-fi
-(cd "$FRONTEND_DIR" && npm run build)
-if [ ! -f "$FRONTEND_DIR/out/index.html" ]; then
-  echo "前端静态导出失败：找不到 frontend/out/index.html" >&2
+cleanup() {
+  if [ -n "$STAGING_DIR" ] && [ -d "$STAGING_DIR" ]; then
+    rm -rf "$STAGING_DIR"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "scripts/build_app.sh 只负责生成 macOS 调试启动器。" >&2
   exit 1
 fi
 
-echo "→ 组装应用包"
-rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS" "$RESOURCES"
+if [ ! -f "$ICON_SOURCE" ]; then
+  echo "→ 生成应用图标"
+  (cd "$ROOT_DIR" && npm run runtime:icons >/dev/null)
+fi
 
-cp "$ROOT_DIR/scripts/hotstory-launcher.sh" "$APP_DIR/Contents/MacOS/HotStory"
-cp "$ROOT_DIR/scripts/HotStory-Info.plist" "$APP_DIR/Contents/Info.plist"
-chmod +x "$APP_DIR/Contents/MacOS/HotStory"
+echo "→ 生成项目内 Tauri 调试启动器"
+STAGING_DIR=$(mktemp -d "$ROOT_DIR/.hotstory-app-build.XXXXXX")
+STAGED_APP="$STAGING_DIR/HotStory.app"
+mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources"
 
-# 后端源码：排除虚拟环境、缓存和测试。
-rsync -a \
-  --exclude '.venv' \
-  --exclude '__pycache__' \
-  --exclude '.pytest_cache' \
-  --exclude '.ruff_cache' \
-  --exclude 'tests' \
-  --exclude '.env' \
-  "$ROOT_DIR/backend/" "$RESOURCES/backend/"
+cp "$ROOT_DIR/scripts/hotstory-dev-launcher.sh" "$STAGED_APP/Contents/MacOS/HotStory"
+cp "$ROOT_DIR/scripts/HotStory-Info.plist" "$STAGED_APP/Contents/Info.plist"
+cp "$ICON_SOURCE" "$STAGED_APP/Contents/Resources/HotStory.icns"
+chmod +x "$STAGED_APP/Contents/MacOS/HotStory"
 
-rsync -a --delete "$FRONTEND_DIR/out/" "$RESOURCES/webui/"
+plutil -lint "$STAGED_APP/Contents/Info.plist" >/dev/null
+test -x "$STAGED_APP/Contents/MacOS/HotStory"
 
-cp "$ROOT_DIR/.env.example" "$RESOURCES/.env.example"
+# 先完成临时包，再替换旧启动器，避免中断后留下残缺 .app。
+PREVIOUS_APP="$STAGING_DIR/HotStory.previous.app"
+if [ -e "$APP_DIR" ]; then
+  mv "$APP_DIR" "$PREVIOUS_APP"
+fi
+if ! mv "$STAGED_APP" "$APP_DIR"; then
+  if [ -e "$PREVIOUS_APP" ]; then
+    mv "$PREVIOUS_APP" "$APP_DIR"
+  fi
+  echo "替换 HotStory.app 失败，已恢复原启动器。" >&2
+  exit 1
+fi
 
-SIZE=$(du -sh "$APP_DIR" | cut -f1)
-echo "已生成：$APP_DIR（$SIZE）"
-echo "双击 HotStory.app 即可启动；首次启动会在 ~/Library/Application Support/HotStory 下准备运行环境。"
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --deep --sign - "$APP_DIR" >/dev/null
+fi
+
+echo "已生成：$APP_DIR"
+echo "双击后会运行当前项目源码并打开 Tauri 应用窗口，不会安装应用或打开浏览器。"

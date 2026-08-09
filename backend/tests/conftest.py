@@ -14,7 +14,6 @@ from app.db.session import Base
 def test_settings(tmp_path) -> Settings:
     return Settings(
         _env_file=None,
-        app_env="test",
         data_dir=tmp_path / "data",
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         llm_provider="mock",

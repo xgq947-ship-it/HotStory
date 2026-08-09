@@ -20,7 +20,7 @@ output/playwright/
 coverage/
 htmlcov/
 *.log
-# 启动器按大小滚动出来的 hotstory-app.log.1 等
+# 调试启动器按大小滚动出来的 hotstory-dev-app.log.1 等
 *.log.*
 data/hotstory.db
 data/hotstory.db-*
@@ -28,7 +28,7 @@ data/.node-arch
 data/projects/*
 !data/projects/.gitkeep
 
-# 打包产物：由 scripts/build_app.sh 生成，且运行时会在包内写 __pycache__
+# 项目内调试启动器：由 scripts/build_app.sh 生成
 HotStory.app/
 
 # 内嵌运行时：由 scripts/prepare-*.mjs 下载/生成，不进版本库

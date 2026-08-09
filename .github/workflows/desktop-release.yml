@@ -20,8 +20,6 @@ jobs:
         include:
           - os: macos-14 # Apple Silicon
             target: aarch64-apple-darwin
-          - os: macos-13 # Intel
-            target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
@@ -41,7 +39,7 @@ jobs:
           workspaces: src-tauri
 
       - name: 安装打包工具
-        run: npm install
+        run: npm ci
 
       - name: 安装前端依赖
         working-directory: frontend
@@ -64,8 +62,21 @@ jobs:
         env:
           # 更新签名用的是 Tauri 自己的 minisign 密钥，与系统代码签名无关。
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npx tauri build --target ${{ matrix.target }}
+
+      - name: 校验平台安装包与更新包
+        shell: bash
+        run: |
+          bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            compgen -G "$bundle/nsis/*-setup.exe" >/dev/null
+            compgen -G "$bundle/nsis/*-setup.exe.sig" >/dev/null
+          else
+            compgen -G "$bundle/dmg/*.dmg" >/dev/null
+            compgen -G "$bundle/macos/*.app.tar.gz" >/dev/null
+            compgen -G "$bundle/macos/*.app.tar.gz.sig" >/dev/null
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -74,7 +85,7 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz*
             src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe*
-          if-no-files-found: warn
+          if-no-files-found: error
 
   release:
     needs: build
@@ -96,9 +107,11 @@ jobs:
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
+          name: HotStory ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
             dist/latest.json
             dist/*.app.tar.gz
             dist/*-setup.exe
             artifacts/**/*.dmg
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
