@@ -216,7 +216,7 @@ class CinematicShotData(ShotPlanDraft):
     duration_seconds: int = Field(ge=1, le=10)
     prompt_body_template: str
     ambient_audio: str = ""
-    target_model: str = "Seedance 2.0 / Higgsfield Seedance"
+    target_model: str = "Seedance 2.0/2.5 / Higgsfield Seedance"
     optimized_by: str = "acting-ai-video + cinedance-higgsfield"
     revision: int = Field(default=1, ge=1)
 

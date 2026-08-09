@@ -25,6 +25,7 @@ from app.schemas.domain import (
 from app.services.artifacts import ProjectStore
 from app.services.materials import material_counts, material_ready, minimums
 from app.services.pipeline import PipelineBusyError, PipelineRunner
+from app.services.production.package import ProductionPackageBuilder
 from app.services.serialization import event_dict, fact_dict, source_dict, topic_dict
 from app.services.state import PIPELINE_STEPS
 from app.utils import new_id
@@ -250,6 +251,20 @@ def _artifact_response(
     return value
 
 
+def _load_repaired_production_package(
+    store: ProjectStore, session: Session, topic_id: str
+) -> ProductionPackageData:
+    value = store.load_json(session, topic_id, "production_package")
+    if value is None:
+        raise HTTPException(status_code=404, detail="影视生成包尚未生成")
+    package = ProductionPackageData.model_validate(value)
+    repaired, changed = ProductionPackageBuilder.repair_display_prompts(package)
+    if changed:
+        store.save_json(session, topic_id, "production_package", repaired)
+        session.commit()
+    return repaired
+
+
 @router.get("/topics/{topic_id}/timeline")
 def get_timeline(
     topic_id: str,
@@ -315,9 +330,13 @@ def get_production_package(
     store: ProjectStore = Depends(get_store),
     if_none_match: str | None = Header(default=None, alias="If-None-Match"),
 ):
-    return _artifact_response(
-        store, session, topic_id, "production_package", if_none_match, response
-    )
+    require_topic(topic_id, session)
+    package = _load_repaired_production_package(store, session, topic_id)
+    tag = _etag("production_package", store.version(session, topic_id, "production_package"))
+    if if_none_match and if_none_match.strip() == tag:
+        return Response(status_code=304, headers={"ETag": tag})
+    response.headers["ETag"] = tag
+    return package
 
 
 @router.get("/topics/{topic_id}/production-package/download")
@@ -327,6 +346,7 @@ def download_production_package(
     store: ProjectStore = Depends(get_store),
 ) -> FileResponse:
     require_topic(topic_id, session)
+    _load_repaired_production_package(store, session, topic_id)
     path = store.topic_dir(topic_id) / "production_package.json"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="影视生成包尚未生成")

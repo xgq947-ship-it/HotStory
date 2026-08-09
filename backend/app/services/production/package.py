@@ -42,6 +42,109 @@ ID_PATTERNS = {
 }
 REFERENCE_TAG_PATTERN = re.compile(r"@[A-Za-z0-9_-]+")
 SHOT_LABEL_PATTERN = re.compile(r"(?i)\bS(?:HOT)?\s*\d{1,3}\s*[:：\-]?\s*")
+DISPLAY_DEVICE_TERMS = (
+    "手机",
+    "平板",
+    "笔记本",
+    "屏幕",
+    "电脑屏幕",
+    "显示器",
+    "监视器",
+    "电视屏幕",
+    "相机显示屏",
+    "车载屏幕",
+    "终端屏幕",
+    "电子阅读器",
+)
+DISPLAY_INTERACTION_TERMS = (
+    "看",
+    "盯",
+    "凝视",
+    "浏览",
+    "阅读",
+    "操作",
+    "使用",
+    "输入",
+    "滑动",
+    "点击",
+    "敲击",
+    "拿起",
+    "举起",
+    "握",
+    "捧",
+    "面对",
+    "查看",
+    "确认",
+)
+DISPLAY_GEOMETRY_HEADING = "设备可见面几何"
+DISPLAY_READABLE_CAMERA_TERMS = (
+    "越肩",
+    "主观镜头",
+    "人物主观",
+    "POV",
+    "INSERT CUT",
+    "插入镜头",
+)
+DISPLAY_SURFACE_PATTERN = (
+    r"(?:手机|平板|笔记本(?:电脑)?|电脑|显示器|监视器|电视|相机|车载|终端|"
+    r"电子阅读器)?(?:的)?(?:屏幕|显示面)"
+)
+DISPLAY_DETAIL_PATTERN = (
+    r"数字|数值|金额|余额|读数|数据|图表|曲线|走势图|K线|界面|页面|文字|"
+    r"消息|通知|验证码|二维码|订单|账户|行情|股价|价格|收益|亏损|盈利|照片|"
+    r"视频|地图|导航|邮件|标题|比分|内容"
+)
+DISPLAY_CONTENT_CLAUSE_PATTERN = re.compile(
+    rf"[^，。；：\n]*(?:{DISPLAY_SURFACE_PATTERN})[^，。；：\n]*"
+    rf"(?:{DISPLAY_DETAIL_PATTERN})[^，。；：\n]*"
+    rf"|[^，。；：\n]*(?:{DISPLAY_DETAIL_PATTERN})[^，。；：\n]*"
+    rf"(?:{DISPLAY_SURFACE_PATTERN})[^，。；：\n]*"
+)
+DISPLAY_OUTPUT_CLAUSE_PATTERN = re.compile(
+    rf"[^，。；：\n]*(?:{DISPLAY_SURFACE_PATTERN})[^，。；：\n]*"
+    r"(?:显示(?!面)|呈现|写着|展示|弹出|刷新出)[^，。；：\n]*"
+)
+DISPLAY_COLOR_CUE_CLAUSE_PATTERN = re.compile(
+    rf"[^，。；：\n]*(?:{DISPLAY_SURFACE_PATTERN}|屏幕光|屏幕背光)"
+    r"[^，。；：\n]*(?:红|绿|橙|涨|跌|警示)[^，。；：\n]*"
+    rf"|[^，。；：\n]*(?:红|绿|橙|涨|跌|警示)[^，。；：\n]*"
+    rf"(?:{DISPLAY_SURFACE_PATTERN}|屏幕光|屏幕背光)[^，。；：\n]*"
+)
+DISPLAY_DETAIL_COMPOUND_PATTERN = re.compile(
+    r"(?:亏损|盈利|收益|账户|股价|行情|价格|订单|聊天|地图|导航|交易|邮件|"
+    r"日程|比分|新闻|标题)(?:的)?(?:数值|数字|金额|余额|数据|图表|曲线|"
+    r"走势图|K线|界面|页面|读数|文字|消息|通知|二维码|照片|视频|内容)"
+    r"|账户余额|消息内容|邮件正文"
+)
+DISPLAY_STANDALONE_VISUAL_PATTERN = re.compile(
+    r"K线|走势图|图表|曲线|界面|页面|读数|数值|数字|金额|余额|数据|文字|"
+    r"消息|通知|验证码|二维码|订单|账户|行情|股价|价格|照片|视频|地图|导航|"
+    r"邮件|标题|比分"
+)
+DISPLAY_CAMERA_TARGET_PATTERN = re.compile(
+    rf"(?:推近|推进|靠近|拉近|对准|聚焦|跟焦|特写|近景|放大)"
+    rf"[^，。；\n]{{0,20}}(?:{DISPLAY_SURFACE_PATTERN}|手机|平板|笔记本|电脑|设备)"
+    rf"|(?:{DISPLAY_SURFACE_PATTERN}|手机|平板|笔记本|电脑|设备)"
+    r"[^，。；\n]{0,12}(?:特写|近景|推近|推进|靠近|拉近|对准|聚焦|跟焦|放大)"
+)
+PROMPT_SECTION_HEADINGS = (
+    "人物锚点",
+    "场景上下文",
+    "有效参考",
+    "有效参考资产",
+    "场景空间图",
+    "首帧与空间调度",
+    DISPLAY_GEOMETRY_HEADING,
+    "格式模式",
+    "光学",
+    "摄影机",
+    "动作时间轴",
+    "表演",
+    "物理",
+    "灯光",
+    "正向约束",
+    "音频",
+)
 DEFAULT_STYLE_BIBLE = (
     "真实社会纪实电影质感，自然生活化表演，克制的低对比方向光；"
     "60%环境中性色、30%深灰阴影、10%来自现场的暖色实用光，"
@@ -484,6 +587,27 @@ class ProductionPackageBuilder:
             active_ids = {
                 character_id for shot in chunk for character_id in shot.active_character_ids
             }
+            prompt_shots = []
+            prompt_previous: dict[str, str] = {}
+            for item in chunk:
+                previous_body = (previous_prompts or {}).get(item.shot_id, "")
+                source = f"{item.visual_brief}\n{previous_body}"
+                if self._is_reaction_display_shot(source, item):
+                    prompt_item = item.model_copy(
+                        update={
+                            "visual_brief": self._neutralize_hidden_display_details(
+                                item.visual_brief
+                            )
+                        }
+                    )
+                else:
+                    prompt_item = item
+                prompt_shots.append(prompt_item.model_dump(mode="json"))
+                if previous_body:
+                    prompt_previous[item.shot_id] = self._ensure_display_geometry(
+                        previous_body, item
+                    )
+
             prompt = render_prompt(
                 "cinematic_shots",
                 style_bible=style_bible,
@@ -494,14 +618,8 @@ class ProductionPackageBuilder:
                         if character_id in by_id
                     ]
                 ),
-                shots=stable_json([item.model_dump(mode="json") for item in chunk]),
-                previous_prompts=stable_json(
-                    {
-                        item.shot_id: (previous_prompts or {}).get(item.shot_id, "")
-                        for item in chunk
-                        if (previous_prompts or {}).get(item.shot_id, "")
-                    }
-                ),
+                shots=stable_json(prompt_shots),
+                previous_prompts=stable_json(prompt_previous),
                 acting_skill=self.skill_sources["acting-ai-video"].content,
                 cinedance_skill=self.skill_sources["cinedance-higgsfield"].content,
             )
@@ -604,6 +722,7 @@ class ProductionPackageBuilder:
                         f"人物锚点\n{token}：{character.visual_anchor}，当前镜头保持身份与造型一致。\n\n"
                         f"{body}"
                     )
+            body = self._ensure_display_geometry(body, plan)
             voice_lines = [
                 f"[[{by_id[character_id].reference_token}]] 固定声线："
                 f"{by_id[character_id].voice_prompt}"
@@ -784,6 +903,311 @@ class ProductionPackageBuilder:
     def _remove_shot_labels(text: str) -> str:
         result = SHOT_LABEL_PATTERN.sub("", text)
         return re.sub(r"(?m)^\s*[-•]\s*", "", result).strip()
+
+    @staticmethod
+    def _has_display_interaction(source: str) -> bool:
+        for segment in re.split(r"[。！？!?；;\n]+", source):
+            device_positions = [
+                match.start()
+                for term in DISPLAY_DEVICE_TERMS
+                for match in re.finditer(re.escape(term), segment)
+            ]
+            interaction_positions = [
+                match.start()
+                for term in DISPLAY_INTERACTION_TERMS
+                for match in re.finditer(re.escape(term), segment)
+            ]
+            if any(
+                abs(device_position - interaction_position) <= 36
+                for device_position in device_positions
+                for interaction_position in interaction_positions
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _has_readable_display_camera(source: str) -> bool:
+        for segment in re.split(r"[。！？!?；;\n]+", source):
+            if not any(term in segment for term in DISPLAY_READABLE_CAMERA_TERMS):
+                continue
+            if re.search(r"(?:不|禁止|避免|没有|无)\S{0,6}(?:越肩|主观|POV|插入)", segment):
+                continue
+            return True
+        return False
+
+    @staticmethod
+    def _is_reaction_display_shot(source: str, plan: ShotPlanDraft) -> bool:
+        return bool(
+            plan.active_character_ids
+            and any(term in source for term in DISPLAY_DEVICE_TERMS)
+            and ProductionPackageBuilder._has_display_interaction(source)
+            and not ProductionPackageBuilder._has_readable_display_camera(source)
+        )
+
+    @staticmethod
+    def _neutralize_hidden_display_details(text: str) -> str:
+        """Remove visual screen semantics from a reaction-first device shot."""
+        result = DISPLAY_CONTENT_CLAUSE_PATTERN.sub(
+            "设备背壳始终挡在摄影机与发光显示面之间", text
+        )
+        result = DISPLAY_OUTPUT_CLAUSE_PATTERN.sub(
+            "设备只发出稳定的中性屏幕光", result
+        )
+        result = DISPLAY_COLOR_CUE_CLAUSE_PATTERN.sub(
+            "中性屏幕光均匀照亮人物面部", result
+        )
+        result = DISPLAY_DETAIL_COMPOUND_PATTERN.sub("未入镜的信息", result)
+        result = re.sub(
+            r"(?:显示|呈现|写着|展示|弹出|刷新出)(?:了|着)?\s*未入镜的信息",
+            "只发出稳定的中性屏幕光",
+            result,
+        )
+        result = re.sub(
+            r"(?:又一次|再次|反复)?被未入镜的信息(?:拽醒|惊醒|叫醒)",
+            "因持续压力再次醒来",
+            result,
+        )
+        result = re.sub(
+            r"(?:查看|确认|盯着|凝视|阅读|浏览|看清|读取)\s*未入镜的信息",
+            "双眼锁定发光显示面",
+            result,
+        )
+        result = re.sub(
+            r"账户(?:亏损|盈利|收益|余额)?|(?:亏损|盈利|收益|股价|行情|价格|交易)"
+            r"(?:数值|数字|金额|余额|数据|图表|曲线|走势图|K线|界面|页面|读数)?",
+            "持续压力",
+            result,
+        )
+        result = re.sub(
+            r"(?:聊天)?消息|通知|验证码|邮件(?:正文)?",
+            "此前发生的事",
+            result,
+        )
+        result = re.sub(r"地图|导航(?:路线)?", "行程变化", result)
+        result = ProductionPackageBuilder._rewrite_remaining_display_clauses(result)
+        result = re.sub(
+            r"(?:未入镜的信息|此前发生的事|行程变化)[^，。；：\n]{0,12}"
+            r"(?:清晰可读|清晰可见|可读|看清|读取|刷新|滚动|跳动|闪烁|弹出)",
+            "人物随即产生细微反应",
+            result,
+        )
+        result = re.sub(
+            r"(?:清晰可读|清晰可见|可读|看清|读取|突出|强调)"
+            r"[^，。；：\n]{0,12}(?:未入镜的信息|此前发生的事|行程变化)",
+            "人物随即产生细微反应",
+            result,
+        )
+        result = result.replace("未入镜的信息", "此前发生的事")
+        result = re.sub(
+            r"反复确认[^，。；：\n]{0,16}此前发生的事",
+            "反复查看设备，试图确认自己的判断",
+            result,
+        )
+        result = re.sub(
+            r"把所有注意力压在此前发生的事上",
+            "把所有注意力压在屏幕中心",
+            result,
+        )
+        result = re.sub(
+            r"(?:看|查看|确认|盯住|盯着|凝视|阅读|浏览|看清|读取)"
+            r"(?:那个|那条|这条|这些)?此前发生的事",
+            "双眼锁定发光显示面",
+            result,
+        )
+        result = re.sub(
+            r"双眼锁定发光显示面(?:和|与)此前发生的事",
+            "双眼锁定发光显示面",
+            result,
+        )
+        result = result.replace("此前发生的事静止不动", "眼前情境没有改变")
+        result = result.replace("看到此前发生的事时", "查看设备时")
+        result = re.sub(r"清晰可读|清晰可见|可读", "明确", result)
+        result = re.sub(
+            r"(?:唯一的?)?(?:警示|涨跌|亏损|盈利)[^，。；：\n]{0,10}"
+            r"(?:暖色|冷色|红色|绿色|橙色|色光|颜色)",
+            "一处中性冷白反光",
+            result,
+        )
+        for phrase in (
+            "人物双眼锁定朝向自己的发光显示面并产生细微反应",
+            "设备背壳始终挡在摄影机与发光显示面之间",
+            "中性屏幕光均匀照亮人物面部",
+        ):
+            result = re.sub(
+                rf"(?:{re.escape(phrase)}[，；、]?\s*){{2,}}",
+                phrase,
+                result,
+            )
+        return re.sub(r"[ \t]{2,}", " ", result).strip()
+
+    @staticmethod
+    def _rewrite_remaining_display_clauses(text: str) -> str:
+        parts = re.split(r"([，。；\n])", text)
+        for index in range(0, len(parts), 2):
+            clause = parts[index]
+            if not clause.strip():
+                continue
+            camera_target = DISPLAY_CAMERA_TARGET_PATTERN.search(clause)
+            visual_detail = DISPLAY_STANDALONE_VISUAL_PATTERN.search(clause)
+            if not camera_target and not visual_detail:
+                continue
+
+            prefix = ""
+            remainder = clause
+            heading_pattern = "|".join(re.escape(item) for item in PROMPT_SECTION_HEADINGS)
+            heading = re.match(
+                rf"^(\s*(?:{heading_pattern})(?:（[^\n）]*）)?\s*[：:]?\s*)",
+                remainder,
+            )
+            if heading:
+                prefix += heading.group(1)
+                remainder = remainder[heading.end() :]
+            timing = re.match(
+                r"^(\s*\d{1,2}:\d{2}(?:\s*(?:至|-|—)\s*\d{1,2}:\d{2})?\s*)",
+                remainder,
+            )
+            if timing:
+                prefix += timing.group(1)
+
+            if camera_target:
+                replacement = "摄影机只靠近人物双眼与面部反应"
+            elif any(term in clause for term in ("光", "照亮", "反射", "色")):
+                replacement = "中性屏幕光均匀照亮人物面部"
+            elif any(term in clause for term in ("约束", "背壳", "显示面")):
+                replacement = "设备背壳始终挡在摄影机与发光显示面之间"
+            else:
+                replacement = "人物双眼锁定朝向自己的发光显示面并产生细微反应"
+            parts[index] = f"{prefix}{replacement}"
+        return "".join(parts)
+
+    @staticmethod
+    def _strip_display_geometry_section(body: str) -> str:
+        other_headings = "|".join(
+            re.escape(heading)
+            for heading in PROMPT_SECTION_HEADINGS
+            if heading != DISPLAY_GEOMETRY_HEADING
+        )
+        pattern = re.compile(
+            rf"(?ms)^[ \t]*{re.escape(DISPLAY_GEOMETRY_HEADING)}"
+            rf"(?:（[^\n）]*）)?[ \t]*[：:]?[ \t]*(?:\n)?"
+            rf".*?(?=^[ \t]*(?:{other_headings})(?:（[^\n）]*）)?"
+            rf"[ \t]*(?:[：:]|$)|\Z)"
+        )
+        return re.sub(r"\n{3,}", "\n\n", pattern.sub("", body)).strip()
+
+    @staticmethod
+    def _reaction_display_geometry_lock(source: str) -> str:
+        locks: list[str] = []
+        if "手机" in source:
+            locks.append(
+                "人物双眼 → 手机发光显示面 → 手机机身与背壳 → 摄影机。"
+                "手机显示面法线始终指向人物双眼并背离摄影机；背板与后置镜头模组"
+                "始终朝向摄影机，摄影机只记录背板、后置镜头模组和窄边。"
+                "手机从拿起到放下不绕竖轴或横轴翻面。"
+            )
+        if "平板" in source:
+            locks.append(
+                "人物双眼 → 平板发光显示面 → 平板背板 → 摄影机。"
+                "显示面始终朝向人物，背板始终朝向摄影机，摄影机只记录背板和窄边；"
+                "平板全程不翻面。"
+            )
+        if "笔记本" in source:
+            locks.append(
+                "人物双眼 → 笔记本发光显示面 → 屏幕面板与外侧上盖 → 摄影机。"
+                "人物位于键盘一侧，摄影机位于外侧上盖一侧，只记录上盖、铰链与窄边；"
+                "铰链角度固定，电脑不转向摄影机。"
+            )
+        if any(term in source for term in ("显示器", "监视器", "电脑屏幕")):
+            locks.append(
+                "人物双眼 → 显示器发光显示面 → 显示器后壳 → 摄影机。"
+                "摄影机只记录后壳、支架和线缆，人物与显示器相对位置全程固定。"
+            )
+        if "电视" in source:
+            locks.append(
+                "人物双眼 → 电视发光显示面 → 电视后壳 → 摄影机。"
+                "摄影机只记录电视后壳、支架和人物面部反应。"
+            )
+        if "相机显示屏" in source:
+            locks.append(
+                "操作者双眼 → 相机发光显示面 → 相机外壳 → 摄影机。"
+                "外部摄影机只记录相机外壳和操作者反应。"
+            )
+        if "车载屏幕" in source:
+            locks.append(
+                "使用者双眼 → 车载发光显示面 → 车载屏幕后壳 → 摄影机。"
+                "摄影机保持在后壳一侧，设备固定在车辆原位。"
+            )
+        if any(term in source for term in ("终端屏幕", "支付终端")):
+            locks.append(
+                "使用者双眼 → 终端发光显示面 → 终端外壳 → 摄影机。"
+                "摄影机只记录终端外壳、手部接触和使用者反应。"
+            )
+        if "电子阅读器" in source:
+            locks.append(
+                "人物双眼 → 阅读器显示面 → 阅读器背板 → 摄影机。"
+                "摄影机只记录背板和窄边，阅读器全程不翻面。"
+            )
+        if not locks:
+            locks.append(
+                "人物双眼 → 发光显示面 → 设备机身与背壳 → 摄影机。"
+                "显示面始终朝向人物并背离摄影机，摄影机只记录设备背壳和窄边；"
+                "设备全程不翻面。"
+            )
+        return "".join(locks) + "旁白只进入声音轨，不改变上述空间关系。"
+
+    @classmethod
+    def _ensure_display_geometry(cls, body: str, plan: ShotPlanDraft) -> str:
+        """Enforce one physically possible device face and remove conflicts."""
+        source = f"{plan.visual_brief}\n{body}"
+        if (
+            not plan.active_character_ids
+            or not any(term in source for term in DISPLAY_DEVICE_TERMS)
+            or not cls._has_display_interaction(source)
+        ):
+            return body
+
+        stripped = cls._strip_display_geometry_section(body)
+        if cls._has_readable_display_camera(source):
+            lock = (
+                "这是人物同侧的越肩、主观或插入机位：摄影机与人物双眼同在屏幕"
+                "显示面一侧；发光显示面仍正对人物，镜头越过肩膀自然看见屏幕内容。"
+                "设备朝向、握持手、铰链角度、屏幕状态和人物视线保持稳定。"
+            )
+        else:
+            stripped = cls._neutralize_hidden_display_details(stripped)
+            lock = cls._reaction_display_geometry_lock(source)
+        return (
+            f"{DISPLAY_GEOMETRY_HEADING}（最高优先级）\n{lock}\n\n{stripped}"
+        ).strip()
+
+    @staticmethod
+    def _split_visual_audio(prompt: str) -> tuple[str, str]:
+        match = re.search(r"(?m)^音频(?:（[^\n]*）)?\s*$", prompt)
+        if not match:
+            return prompt.strip(), ""
+        return prompt[: match.start()].strip(), prompt[match.start() :].strip()
+
+    @classmethod
+    def repair_display_prompts(
+        cls, package: ProductionPackageData
+    ) -> tuple[ProductionPackageData, bool]:
+        """Repair saved prompts locally without another LLM generation."""
+        changed = False
+        shots: list[CinematicShotData] = []
+        for shot in package.shots:
+            plan = ShotPlanDraft.model_validate(shot.model_dump(mode="json"))
+            visual, audio = cls._split_visual_audio(shot.prompt_body_template)
+            repaired_visual = cls._ensure_display_geometry(visual, plan)
+            repaired = (
+                f"{repaired_visual}\n\n{audio}".strip() if audio else repaired_visual
+            )
+            if repaired != shot.prompt_body_template:
+                changed = True
+                shot = shot.model_copy(update={"prompt_body_template": repaired})
+            shots.append(shot)
+        if not changed:
+            return package, False
+        return package.model_copy(update={"shots": shots}), True
 
     def _reset_diagnostics(self) -> None:
         self.warnings = []
