@@ -12,7 +12,7 @@ export function TopicRoute() {
       <div className="grid min-h-screen place-items-center bg-paper px-6 text-center">
         <div>
           <p className="text-sm text-ink-2">缺少主题 ID。</p>
-          <Link className="mt-3 inline-block text-sm font-medium text-verified hover:underline" href="/">
+          <Link className="mt-3 inline-block text-sm font-medium text-accent hover:underline" href="/">
             返回首页
           </Link>
         </div>

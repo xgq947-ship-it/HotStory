@@ -21,6 +21,12 @@ from app.schemas.domain import (
 )
 from app.services.artifacts import ProjectStore
 from app.services.llm.service import LLMService
+from app.services.production.compliance import (
+    ComplianceHit,
+    build_entity_rules,
+    sanitize,
+    summarize,
+)
 from app.services.production.skills import VerbatimSkill, load_verbatim_skill
 from app.services.prompts import render_prompt
 from app.services.script.context import narrative_context
@@ -62,6 +68,7 @@ class ProductionPackageBuilder:
         self.ai_successes = 0
         self.ai_failures = 0
         self.skill_sources: dict[str, VerbatimSkill] = {}
+        self.compliance_hits: list[ComplianceHit] = []
 
     async def build(
         self, session: Session, topic: Topic, duration: int
@@ -95,7 +102,7 @@ class ProductionPackageBuilder:
             duration_seconds=duration,
             llm_profile=self.llm_profile,
             generation_mode=self._generation_mode(),
-            warnings=self.warnings,
+            warnings=self._warnings_with_compliance(),
             style_bible=style_bible,
             skills=[
                 SkillStageData(
@@ -500,6 +507,15 @@ class ProductionPackageBuilder:
             )
             batch_requests.append((offset // 4 + 1, chunk, prompt))
 
+        entity_rules = build_entity_rules(
+            [
+                name
+                for item in context.get("facts", [])
+                for name in item.get("organizations", [])
+            ],
+            [name for item in context.get("facts", []) for name in item.get("people", [])],
+        )
+
         semaphore = asyncio.Semaphore(self.llm_concurrency)
 
         async def generate_batch(
@@ -601,6 +617,13 @@ class ProductionPackageBuilder:
                 plan.dialogue,
                 voice_lines if plan.dialogue else [],
             )
+            # 合规改写是最后一步：无损检查已经跑完，这里只换风险词面，
+            # 不删控制信息，也不碰 Acting SKILL 要求的表演结构。
+            body, body_hits = sanitize(body, entity_rules)
+            ambient, ambient_hits = sanitize(ambient, entity_rules)
+            hits = body_hits + ambient_hits
+            if hits:
+                self.compliance_hits.extend(hits)
             shots.append(
                 CinematicShotData(
                     **plan.model_dump(),
@@ -766,6 +789,7 @@ class ProductionPackageBuilder:
         self.warnings = []
         self.ai_successes = 0
         self.ai_failures = 0
+        self.compliance_hits = []
         self.skill_sources = {}
 
     def _load_verbatim_skills(self) -> None:
@@ -822,6 +846,16 @@ class ProductionPackageBuilder:
             message = re.sub(r"https?://\S+", "上游接口", message)
         self.warnings.append(f"{stage}未完成 AI 优化，已使用安全模板：{message[:240]}")
         self.ai_failures += 1
+
+    def _warnings_with_compliance(self) -> list[str]:
+        """合规改写必须可见：这个项目不做静默修改。"""
+        warnings = list(self.warnings)
+        if self.compliance_hits:
+            warnings.append(
+                f"已按视频平台审核规则改写风险表述（{summarize(self.compliance_hits)}），"
+                "表演结构与控制信息未改动。"
+            )
+        return warnings
 
     def _generation_mode(self) -> str:
         if self.ai_failures == 0:

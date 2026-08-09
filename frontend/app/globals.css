@@ -7,18 +7,20 @@
    ────────────────────────────────────────────────────────── */
 
 @theme {
-  --color-paper: #e9eae4;
-  --color-paper-2: #f2f3ee;
-  --color-card: #fbfbf8;
-  --color-ink: #16191c;
-  --color-ink-2: #4e565d;
-  --color-ink-3: #858d93;
-  --color-rule: #d3d6cd;
-  --color-verified: #1d6b57;
-  --color-pending: #a85a22;
+  --color-paper: #f5f5f7;
+  --color-paper-2: #fafafa;
+  --color-card: #ffffff;
+  --color-ink: #111113;
+  --color-ink-2: #6e6e73;
+  --color-ink-3: #a1a1a6;
+  --color-rule: #e6e6e9;
+  --color-verified: #12854f;
+  --color-pending: #b8511b;
+  --color-accent: #1677ff;
 
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
-  --font-sans: "PingFang SC", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "PingFang SC", "Helvetica Neue", sans-serif;
 }
 
 :root {
@@ -64,7 +66,7 @@
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-verified);
+    outline: 2px solid var(--color-accent);
     outline-offset: 2px;
   }
 }
@@ -96,104 +98,85 @@
 
   /* ── 纸面 ────────────────────────────────────────────────── */
   .sheet {
-    background: var(--color-card);
-    border: 1px solid var(--color-rule);
+    background: color-mix(in srgb, var(--color-card) 88%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-ink) 8%, transparent);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.035);
+    backdrop-filter: blur(20px);
   }
 
   .bench-nav {
-    background: color-mix(in srgb, var(--color-paper) 88%, transparent);
-    border-bottom: 1px solid var(--color-rule);
-    backdrop-filter: saturate(140%) blur(12px);
+    background: color-mix(in srgb, var(--color-paper) 78%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--color-ink) 9%, transparent);
+    backdrop-filter: saturate(180%) blur(18px);
   }
 
-  /* ── 签名元素：证据链轨道（片头引带）──────────────────────
-     左侧打孔带 + 每步一格。完成的格子盖时间码，运行中的格子扫描，
-     失败的格子转赭色。这是产品论点的可视化，不是装饰。 */
+  /* ── 研究进度：勾选清单，右侧保留每步真实耗时 ──────────── */
   .leader {
     position: relative;
-    padding-left: 26px;
-  }
-
-  .leader::before {
-    content: "";
-    position: absolute;
-    inset-block: 0;
-    left: 0;
-    width: 18px;
-    background:
-      repeating-linear-gradient(
-        to bottom,
-        transparent 0 9px,
-        color-mix(in srgb, var(--color-ink) 16%, transparent) 9px 15px,
-        transparent 15px 24px
-      );
-    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 8%, #000 92%, transparent);
-    mask-image: linear-gradient(to bottom, transparent, #000 8%, #000 92%, transparent);
-  }
-
-  .leader::after {
-    content: "";
-    position: absolute;
-    inset-block: 0;
-    left: 21px;
-    width: 1px;
-    background: var(--color-rule);
   }
 
   .frame {
     position: relative;
     display: grid;
     grid-template-columns: 1fr auto;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
-    padding: 9px 10px 9px 12px;
-    border-left: 2px solid transparent;
+    min-height: 34px;
+    padding: 4px 2px;
   }
 
-  .frame + .frame {
-    border-top: 1px solid color-mix(in srgb, var(--color-rule) 60%, transparent);
-  }
-
-  .frame[data-state="SUCCESS"] {
-    border-left-color: var(--color-verified);
-  }
-
-  .frame[data-state="FAILED"] {
-    border-left-color: var(--color-pending);
-    background: color-mix(in srgb, var(--color-pending) 6%, transparent);
-  }
-
-  .frame[data-state="RUNNING"] {
-    border-left-color: var(--color-ink);
-    background: color-mix(in srgb, var(--color-ink) 4%, transparent);
-  }
-
-  /* 唯一的动效：正在跑的那一格。 */
-  .frame[data-state="RUNNING"]::after {
+  .frame::before {
     content: "";
     position: absolute;
-    inset-inline: 0;
-    bottom: -1px;
-    height: 1px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      var(--color-ink) 45%,
-      var(--color-ink) 55%,
-      transparent
-    );
-    animation: scan 1.9s ease-in-out infinite;
+    left: 0;
+    top: 50%;
+    width: 0;
   }
 
-  @keyframes scan {
+  .frame[data-state="RUNNING"] .step-dot {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: #fff;
+  }
+
+  .frame[data-state="SUCCESS"] .step-dot {
+    background: var(--color-verified);
+    border-color: var(--color-verified);
+    color: #fff;
+  }
+
+  .frame[data-state="FAILED"] .step-dot {
+    background: var(--color-pending);
+    border-color: var(--color-pending);
+    color: #fff;
+  }
+
+  .step-dot {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    border: 1px solid var(--color-rule);
+    border-radius: 999px;
+    background: var(--color-card);
+    color: transparent;
+    font-size: 10px;
+    line-height: 1;
+  }
+
+  /* 唯一的动效：正在跑的那一步。 */
+  .frame[data-state="RUNNING"] .step-dot {
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
     0%,
     100% {
-      opacity: 0.15;
-      transform: scaleX(0.4);
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 45%, transparent);
     }
     50% {
-      opacity: 0.7;
-      transform: scaleX(1);
+      box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-accent) 0%, transparent);
     }
   }
 
@@ -214,20 +197,15 @@
 
   .script-markdown h2 {
     margin: 2.2rem 0 0.85rem;
-    padding-top: 1.1rem;
-    border-top: 1px solid var(--color-rule);
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    font-size: 0.82rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    color: var(--color-ink-2);
+    font-size: 1.06rem;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+    color: var(--color-ink);
   }
 
   .script-markdown h3 {
     margin: 1.3rem 0 0.35rem;
-    font-family: var(--font-mono);
-    font-size: 0.66rem;
+    font-size: 0.68rem;
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -250,7 +228,7 @@
   }
 
   .script-markdown li::before {
-    content: "—";
+    content: "·";
     position: absolute;
     left: -1.15rem;
     color: var(--color-ink-3);
@@ -263,7 +241,7 @@
   }
 
   .script-markdown a {
-    color: var(--color-verified);
+    color: var(--color-accent);
     text-underline-offset: 3px;
   }
 

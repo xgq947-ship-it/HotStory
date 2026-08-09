@@ -85,7 +85,7 @@ function artifactKeys(status: StatusPayload | null): Record<string, string> {
 function Metric({ label, value, target }: { label: string; value: number; target?: number }) {
   const reached = target === undefined || value >= target;
   return (
-    <div className="rounded-[4px] bg-paper-2 p-4 ring-1 ring-rule">
+    <div className="rounded-2xl bg-paper-2 p-4 ring-1 ring-rule">
       <div className="flex items-baseline gap-1.5">
         <span className="text-2xl font-semibold tracking-[-0.04em] tabular-nums">{value}</span>
         {target !== undefined ? <span className="text-xs text-ink-3">/ {target}</span> : null}
@@ -344,7 +344,7 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
           <div className="flex items-center gap-4">
             <StatusPill status={topic.status} />
             <button
-              className="gauge rounded-[4px] border border-rule px-2.5 py-1.5 text-ink-2 transition hover:border-ink hover:text-ink"
+              className="gauge rounded-2xl border border-rule px-2.5 py-1.5 text-ink-2 transition hover:border-ink hover:text-ink"
               onClick={() => setSettingsOpen(true)}
             >
               设置
@@ -361,8 +361,8 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
       <main className="mx-auto max-w-[1280px] px-5 pb-24 pt-9 sm:px-8 sm:pt-12">
         <div className="grid gap-8 lg:grid-cols-[290px_minmax(0,1fr)]">
           <aside className="space-y-5 lg:sticky lg:top-20 lg:self-start">
-            <section>
-              <p className="label">研究档案 / FILE</p>
+            <section className="sheet rounded-2xl p-5">
+              <p className="label">RESEARCH FILE</p>
               <h1 className="mt-2.5 text-[19px] font-semibold leading-[1.4] tracking-[-0.025em]">
                 {topic.title}
               </h1>
@@ -378,7 +378,7 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
 
               {topic.status === "CREATED" ? (
                 <button
-                  className="mt-4 w-full rounded-[3px] border border-ink bg-ink px-4 py-2.5 text-[13px] font-medium text-paper transition hover:bg-ink-2 disabled:border-rule disabled:bg-transparent disabled:text-ink-3"
+                  className="mt-4 w-full rounded-xl border border-ink bg-ink px-4 py-2.5 text-[13px] font-medium text-paper transition hover:bg-ink-2 disabled:border-rule disabled:bg-transparent disabled:text-ink-3"
                   onClick={() => void start()}
                   disabled={busy}
                   type="button"
@@ -388,7 +388,7 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
               ) : null}
               {topic.status === "FAILED" ? (
                 <button
-                  className="mt-4 w-full rounded-[3px] border border-ink bg-ink px-4 py-2.5 text-[13px] font-medium text-paper transition hover:bg-ink-2 disabled:border-rule disabled:bg-transparent disabled:text-ink-3"
+                  className="mt-4 w-full rounded-xl border border-ink bg-ink px-4 py-2.5 text-[13px] font-medium text-paper transition hover:bg-ink-2 disabled:border-rule disabled:bg-transparent disabled:text-ink-3"
                   onClick={() => void continueResearch()}
                   disabled={busy}
                   type="button"
@@ -399,9 +399,9 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
             </section>
 
             {/* 证据链轨道：13 步排成片头引带，完成的格子盖上耗时。 */}
-            <section>
-              <div className="flex items-baseline justify-between border-b border-ink pb-1.5">
-                <p className="label !text-ink">证据链</p>
+            <section className="sheet rounded-2xl p-5">
+              <div className="flex items-baseline justify-between">
+                <h2 className="text-sm font-semibold">研究进度</h2>
                 <span className="gauge text-ink-3">
                   {status.steps.filter((step) => step.status === "SUCCESS").length}/
                   {status.steps.length}
@@ -410,12 +410,17 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
               <ol className="leader mt-3">
                 {status.steps.map((step) => (
                   <li className="frame" data-state={step.status} key={step.step}>
-                    <span
-                      className={`text-[12.5px] leading-[1.4] ${
-                        step.status === "PENDING" ? "text-ink-3" : "text-ink"
-                      }`}
-                    >
-                      {stepLabels[step.step] ?? step.step}
+                    <span className="flex items-center gap-2.5">
+                      <span className="step-dot">
+                        {step.status === "FAILED" ? "!" : step.status === "RUNNING" ? "•" : "✓"}
+                      </span>
+                      <span
+                        className={`text-[13px] leading-[1.4] ${
+                          step.status === "PENDING" ? "text-ink-3" : "text-ink"
+                        }`}
+                      >
+                        {stepLabels[step.step] ?? step.step}
+                      </span>
                     </span>
                     <span className="gauge text-ink-3">{stepReadout(step)}</span>
                   </li>
@@ -425,7 +430,7 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
           </aside>
 
           <div className="min-w-0">
-            <section className="sheet rounded-[4px]">
+            <section className="sheet rounded-2xl">
               <nav className="overflow-x-auto border-b border-rule px-1.5" aria-label="研究档案导航">
                 <div className="flex min-w-max">
                   {tabs.map((tab) => (
@@ -531,12 +536,12 @@ function Overview({
 
       {story ? (
         <div className="mt-8 grid gap-4 md:grid-cols-2">
-          <div className="rounded-[4px] bg-ink p-6 text-paper">
+          <div className="rounded-2xl bg-ink p-6 text-paper">
             <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Central theme</p>
             <h3 className="mt-3 text-[22px] font-semibold leading-8 tracking-[-0.03em]">{story.central_theme}</h3>
             <p className="mt-4 text-sm leading-6 text-ink-3">核心冲突：{story.core_conflict}</p>
           </div>
-          <div className="rounded-[4px] bg-paper-2 p-6 ring-1 ring-rule">
+          <div className="rounded-2xl bg-paper-2 p-6 ring-1 ring-rule">
             <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-3">Story arc</p>
             <div className="mt-4 flex flex-wrap gap-2">
               {story.story_arc.map((stage, index) => (
@@ -548,7 +553,7 @@ function Overview({
           </div>
         </div>
       ) : (
-        <div className="mt-8 rounded-[4px] border border-dashed border-rule px-6 py-12 text-center text-sm text-ink-3">
+        <div className="mt-8 rounded-2xl border border-dashed border-rule px-6 py-12 text-center text-sm text-ink-3">
           {isRunning ? "故事主线会在事实与时间线核验完成后出现。" : "尚未生成故事主线。"}
         </div>
       )}
@@ -559,7 +564,7 @@ function Overview({
             <h3 className="text-sm font-semibold">代表事件</h3>
             <span className="text-xs text-ink-3">共 {events.length} 个</span>
           </div>
-          <div className="divide-y divide-rule rounded-[4px] ring-1 ring-rule">
+          <div className="divide-y divide-rule rounded-2xl ring-1 ring-rule">
             {events.slice(0, 5).map((event) => (
               <div className="grid gap-1 px-4 py-3.5 sm:grid-cols-[90px_1fr]" key={event.id}>
                 <span className="text-xs tabular-nums text-ink-3">{event.date || "时间待定"}</span>
@@ -611,7 +616,7 @@ function CasesView({ cases, sourceMap }: { cases: Fact[]; sourceMap: Map<string,
       <SectionTitle eyebrow="People" title="真实案例" note={`${cases.length} 个已核验案例`} />
       <div className="mt-8 grid gap-4 md:grid-cols-2">
         {cases.map((fact, index) => (
-          <article className="rounded-[4px] bg-paper-2 p-5 ring-1 ring-rule" key={fact.id}>
+          <article className="rounded-2xl bg-paper-2 p-5 ring-1 ring-rule" key={fact.id}>
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-3">Case {String(index + 1).padStart(2, "0")}</span>
               <span className="text-xs font-semibold text-verified">可信度 {confidenceLabel(fact.confidence)}</span>
@@ -630,7 +635,7 @@ function CasesView({ cases, sourceMap }: { cases: Fact[]; sourceMap: Map<string,
                 {fact.source_ids.map((id) => {
                   const source = sourceMap.get(id);
                   return source ? (
-                    <a className="text-verified hover:underline" href={source.url} target="_blank" rel="noreferrer" key={id}>
+                    <a className="text-accent hover:underline" href={source.url} target="_blank" rel="noreferrer" key={id}>
                       {source.publisher || source.title}
                     </a>
                   ) : (
@@ -653,7 +658,7 @@ function DataView({ facts, sourceMap }: { facts: Fact[]; sourceMap: Map<string, 
       <SectionTitle eyebrow="Verified data" title="关键数据" note={`${facts.length} 条已核验数据`} />
       <div className="mt-8 space-y-3">
         {facts.map((fact) => (
-          <article className="grid gap-4 rounded-[4px] p-5 ring-1 ring-rule sm:grid-cols-[150px_1fr]" key={fact.id}>
+          <article className="grid gap-4 rounded-2xl p-5 ring-1 ring-rule sm:grid-cols-[150px_1fr]" key={fact.id}>
             <div>
               <p className="text-2xl font-semibold tracking-[-0.04em] text-verified">{fact.numbers[0] || "数据"}</p>
               <p className="mt-1 text-xs text-ink-3">{fact.date || "日期见来源"}</p>
@@ -664,7 +669,7 @@ function DataView({ facts, sourceMap }: { facts: Fact[]; sourceMap: Map<string, 
                 {fact.source_ids.map((id) => {
                   const source = sourceMap.get(id);
                   return source ? (
-                    <a className="text-xs text-verified hover:underline" href={source.url} target="_blank" rel="noreferrer" key={id}>
+                    <a className="text-xs text-accent hover:underline" href={source.url} target="_blank" rel="noreferrer" key={id}>
                       {source.publisher || source.title}
                     </a>
                   ) : null;
@@ -685,11 +690,11 @@ function SourcesView({ sources, facts }: { sources: Source[]; facts: Fact[] }) {
   return (
     <div>
       <SectionTitle eyebrow="Traceability" title="全部来源" note={`${sources.length} 个独立页面`} />
-      <div className="mt-8 divide-y divide-rule rounded-[4px] ring-1 ring-rule">
+      <div className="mt-8 divide-y divide-rule rounded-2xl ring-1 ring-rule">
         {sources.map((source) => (
           <article className="p-4 sm:p-5" key={source.id}>
             <div className="flex items-start gap-4">
-              <div className="grid size-9 shrink-0 place-items-center rounded-[3px] bg-paper-2 text-[11px] font-bold uppercase text-ink-2">
+              <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-paper-2 text-[11px] font-bold uppercase text-ink-2">
                 {(source.publisher || "WEB").slice(0, 2)}
               </div>
               <div className="min-w-0 flex-1">
@@ -750,10 +755,10 @@ function ScriptView({
           <h2 className="mt-2 text-[30px] font-semibold tracking-[-0.045em]">纪录片式剧本</h2>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button className="rounded-[3px] bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule" onClick={onCopy} type="button">
+          <button className="rounded-xl bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule" onClick={onCopy} type="button">
             {copied ? "已复制" : "复制"}
           </button>
-          <a className="rounded-[3px] bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule" href={scriptDownloadUrl(topicId)}>
+          <a className="rounded-xl bg-paper-2 px-3.5 py-2 text-xs font-semibold text-ink-2 hover:bg-rule" href={scriptDownloadUrl(topicId)}>
             导出 Markdown
           </a>
         </div>
@@ -775,7 +780,7 @@ function ScriptView({
       </div>
 
       {payload.review?.issues.length ? (
-        <div className="mt-5 rounded-[3px] bg-pending/[0.07] p-4 text-xs leading-5 text-amber-800">
+        <div className="mt-5 rounded-xl bg-pending/[0.07] p-4 text-xs leading-5 text-amber-800">
           {payload.review.issues.join("；")}
         </div>
       ) : null}
@@ -801,7 +806,7 @@ function SectionTitle({ eyebrow, title, note }: { eyebrow: string; title: string
 
 function Empty({ message }: { message: string }) {
   return (
-    <div className="grid min-h-72 place-items-center rounded-[4px] border border-dashed border-rule px-6 text-center text-sm text-ink-3">
+    <div className="grid min-h-72 place-items-center rounded-2xl border border-dashed border-rule px-6 text-center text-sm text-ink-3">
       {message}
     </div>
   );

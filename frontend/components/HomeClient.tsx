@@ -102,7 +102,7 @@ export function HomeClient() {
               </span>
             </span>
             <button
-              className="gauge rounded-[4px] border border-rule px-2.5 py-1.5 text-ink-2 transition hover:border-ink hover:text-ink"
+              className="gauge rounded-2xl border border-rule px-2.5 py-1.5 text-ink-2 transition hover:border-ink hover:text-ink"
               onClick={() => setSettingsOpen(true)}
             >
               设置
@@ -127,7 +127,7 @@ export function HomeClient() {
               每一句话都挂着来源编号。素材不够就停下，不替你编。
             </p>
 
-            <form className="sheet mt-8 rounded-[4px]" onSubmit={submit}>
+            <form className="sheet mt-8 rounded-2xl" onSubmit={submit}>
               <textarea
                 className="min-h-[104px] w-full resize-none bg-transparent px-4 py-3.5 text-[16px] leading-[1.7] outline-none placeholder:text-ink-3"
                 value={title}
@@ -139,7 +139,7 @@ export function HomeClient() {
               <div className="flex items-center justify-between gap-4 border-t border-rule px-4 py-2.5">
                 <span className="gauge text-ink-3">{title.trim().length}/500</span>
                 <button
-                  className="rounded-[3px] border border-ink bg-ink px-4 py-2 text-[13px] font-medium text-paper transition hover:bg-ink-2 disabled:border-rule disabled:bg-transparent disabled:text-ink-3"
+                  className="rounded-xl border border-ink bg-ink px-4 py-2 text-[13px] font-medium text-paper transition hover:bg-ink-2 disabled:border-rule disabled:bg-transparent disabled:text-ink-3"
                   type="submit"
                   disabled={submitting || title.trim().length < 2}
                 >

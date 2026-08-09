@@ -343,6 +343,7 @@ class SettingFieldState(BaseModel):
     placeholder: str = ""
     restart_required: bool = False
     editable: bool = True
+    depends_on: list[str] | None = None
     value: Any = ""
     configured: bool = False
     source: str = "default"

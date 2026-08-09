@@ -19,16 +19,10 @@ const PAGES: { id: Page; label: string; icon: string }[] = [
   { id: "support", label: "支持", icon: "" },
 ];
 
-const SOURCE_LABEL: Record<string, string> = {
-  manual: "手动设置",
-  env: "环境变量",
-  env_file: ".env 文件",
-  default: "默认值",
-};
-
 const AUTO_CHECK_KEY = "hotstory.autoCheckUpdates";
 const LAST_CHECK_KEY = "hotstory.lastUpdateCheck";
 const REPOSITORY_URL = "https://github.com/xgq947-ship-it/HotStory";
+const WECHAT_ID = "Moment_oo7";
 
 function NavIcon({ page, active }: { page: Page; active: boolean }) {
   const tone = active ? "currentColor" : "currentColor";
@@ -62,27 +56,15 @@ function NavIcon({ page, active }: { page: Page; active: boolean }) {
 function AppIcon({ className = "" }: { className?: string }) {
   return (
     <span
-      className={`grid place-items-center rounded-[5px] bg-ink font-bold tracking-[-0.05em] text-paper shadow-sm ${className}`}
+      className={`grid place-items-center rounded-[22px] bg-ink font-bold tracking-[-0.05em] text-paper shadow-sm ${className}`}
     >
       HS
     </span>
   );
 }
 
-function fieldMatches(field: SettingFieldState, query: string, groupLabel: string) {
-  if (!query.trim()) return true;
-  const needle = query.trim().toLowerCase();
-  return (
-    field.label.toLowerCase().includes(needle) ||
-    field.name.toLowerCase().includes(needle) ||
-    field.help.toLowerCase().includes(needle) ||
-    groupLabel.toLowerCase().includes(needle)
-  );
-}
-
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [page, setPage] = useState<Page>("advanced");
-  const [query, setQuery] = useState("");
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string | number | boolean>>({});
   const [cleared, setCleared] = useState<string[]>([]);
@@ -160,16 +142,24 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
 
   const grouped = useMemo(() => {
     if (!settings) return [];
+    // 当前生效值：草稿优先，其次后端返回值。
+    const effective = (name: string) => {
+      if (drafts[name] !== undefined) return String(drafts[name]);
+      return String(settings.fields.find((item) => item.name === name)?.value ?? "");
+    };
+    const visible = (item: SettingFieldState) => {
+      if (!item.depends_on) return true;
+      const [target, expected] = item.depends_on;
+      return expected.split("|").includes(effective(target));
+    };
     return Object.entries(settings.groups)
       .map(([id, label]) => ({
         id,
         label,
-        fields: settings.fields.filter(
-          (item) => item.group === id && fieldMatches(item, query, label),
-        ),
+        fields: settings.fields.filter((item) => item.group === id && visible(item)),
       }))
       .filter((group) => group.fields.length > 0);
-  }, [settings, query]);
+  }, [settings, drafts]);
 
   function setDraft(name: string, value: string | number | boolean) {
     setDrafts((current) => ({ ...current, [name]: value }));
@@ -252,7 +242,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="relative flex h-[min(760px,92vh)] w-full max-w-[1080px] overflow-hidden rounded-[6px] bg-paper shadow-[0_30px_90px_-20px_rgba(9,9,11,0.45)] ring-1 ring-rule">
+      <div className="relative flex h-[min(760px,92vh)] w-full max-w-[1080px] overflow-hidden rounded-[24px] bg-paper shadow-[0_30px_90px_-20px_rgba(9,9,11,0.45)] ring-1 ring-rule">
         <button
           className="absolute right-5 top-5 z-10 grid size-9 place-items-center rounded-full bg-card text-ink-2 shadow-sm ring-1 ring-rule transition hover:text-ink"
           onClick={onClose}
@@ -263,27 +253,12 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           </svg>
         </button>
 
-        <nav className="hidden w-[248px] shrink-0 flex-col gap-1 border-r border-rule bg-card/70 p-4 sm:flex">
-          <label className="relative mb-3 block">
-            <svg viewBox="0 0 24 24" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-3" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round">
-              <circle cx="11" cy="11" r="6.5" />
-              <path d="m16 16 4 4" />
-            </svg>
-            <input
-              className="w-full rounded-full bg-paper-2 py-2.5 pl-9 pr-3 text-sm outline-none ring-1 ring-transparent transition focus:bg-card focus:ring-rule"
-              placeholder="搜索设置"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                if (event.target.value.trim()) setPage("advanced");
-              }}
-            />
-          </label>
+        <nav className="hidden w-[220px] shrink-0 flex-col gap-1 border-r border-rule bg-card/70 p-4 sm:flex">
           {PAGES.map((item) => (
             <button
               key={item.id}
               onClick={() => setPage(item.id)}
-              className={`flex items-center gap-3 rounded-[3px] px-3.5 py-2.5 text-left text-sm font-medium transition ${
+              className={`flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-left text-sm font-medium transition ${
                 page === item.id
                   ? "bg-ink text-paper shadow-sm"
                   : "text-ink-2 hover:bg-paper-2"
@@ -397,7 +372,7 @@ function AdvancedPage({
           <h2 className="mb-3 text-[13px] font-semibold uppercase tracking-[0.12em] text-ink-3">
             {group.label}
           </h2>
-          <div className="overflow-hidden rounded-[4px] bg-card ring-1 ring-rule">
+          <div className="overflow-hidden rounded-2xl bg-card ring-1 ring-rule">
             {group.fields.map((item, index) => (
               <SettingRow
                 key={item.name}
@@ -490,7 +465,7 @@ function SettingRow({
           />
         ) : field.kind === "select" ? (
           <select
-            className="w-full max-w-[280px] rounded-[3px] bg-paper-2 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition focus:bg-card focus:ring-ink/40 disabled:opacity-50"
+            className="w-full max-w-[280px] rounded-xl bg-paper-2 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition focus:bg-card focus:ring-ink/40 disabled:opacity-50"
             value={String(draft ?? field.value ?? "")}
             disabled={disabled}
             onChange={(event) => onChange(field.name, event.target.value)}
@@ -503,7 +478,7 @@ function SettingRow({
           </select>
         ) : (
           <input
-            className="w-full max-w-[280px] rounded-[3px] bg-paper-2 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition focus:bg-card focus:ring-ink/40 disabled:opacity-50"
+            className="w-full max-w-[280px] rounded-xl bg-paper-2 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition focus:bg-card focus:ring-ink/40 disabled:opacity-50"
             type={field.kind === "number" ? "number" : field.secret ? "password" : "text"}
             inputMode={field.kind === "number" ? "decimal" : undefined}
             placeholder={
@@ -540,9 +515,6 @@ function SettingRow({
             清除
           </button>
         ) : null}
-        <span className="hidden w-[64px] shrink-0 text-right text-[10px] text-ink-3 lg:inline">
-          {SOURCE_LABEL[field.source]}
-        </span>
       </div>
     </div>
   );
@@ -597,7 +569,7 @@ function AboutPage({
 }) {
   return (
     <div className="space-y-8">
-      <section className="rounded-[4px] bg-card px-6 py-12 text-center ring-1 ring-rule">
+      <section className="rounded-2xl bg-card px-6 py-12 text-center ring-1 ring-rule">
         <AppIcon className="mx-auto size-[104px] text-[30px]" />
         <h1 className="mt-6 text-[34px] font-bold tracking-[-0.04em] text-ink">HotStory</h1>
         <p className="mt-1 text-sm text-ink-2">版本 {version || "—"}</p>
@@ -614,7 +586,7 @@ function AboutPage({
             查看新功能
           </button>
           <a
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-verified hover:underline"
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
             href={REPOSITORY_URL}
             target="_blank"
             rel="noreferrer"
@@ -630,7 +602,7 @@ function AboutPage({
 
       <section>
         <h2 className="mb-3 text-[22px] font-semibold tracking-[-0.03em] text-ink">更新</h2>
-        <div className="overflow-hidden rounded-[4px] bg-card ring-1 ring-rule">
+        <div className="overflow-hidden rounded-2xl bg-card ring-1 ring-rule">
           <div className="flex items-center justify-between gap-5 px-5 py-4">
             <div>
               <p className="text-sm font-medium text-ink">自动检查更新</p>
@@ -675,7 +647,7 @@ function AboutPage({
 
           <div className="border-t border-rule px-5 py-4">
             <button
-              className="inline-flex items-center gap-2 rounded-[3px] bg-paper-2 px-4 py-2 text-sm font-medium text-ink-2 transition hover:bg-rule/60 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-xl bg-paper-2 px-4 py-2 text-sm font-medium text-ink-2 transition hover:bg-rule/60 disabled:opacity-50"
               onClick={onCheck}
               disabled={busy}
             >
@@ -701,18 +673,18 @@ function WhatsNewPage({ update, busy }: { update: UpdateCheckPayload | null; bus
   if (busy) return <p className="text-sm text-ink-2">正在读取发布记录…</p>;
   if (!update || update.error)
     return (
-      <div className="rounded-[4px] bg-card p-6 text-sm text-ink-2 ring-1 ring-rule">
+      <div className="rounded-2xl bg-card p-6 text-sm text-ink-2 ring-1 ring-rule">
         {update?.error || "还没有读取到发布记录。"}
       </div>
     );
   if (!update.releases.length)
     return (
-      <div className="rounded-[4px] bg-card p-6 ring-1 ring-rule">
+      <div className="rounded-2xl bg-card p-6 ring-1 ring-rule">
         <p className="text-sm text-ink-2">
           仓库还没有发布任何 Release。当前运行版本 {update.current_version}。
         </p>
         <a
-          className="mt-3 inline-block text-sm font-medium text-verified hover:underline"
+          className="mt-3 inline-block text-sm font-medium text-accent hover:underline"
           href={`${REPOSITORY_URL}/commits/main`}
           target="_blank"
           rel="noreferrer"
@@ -724,7 +696,7 @@ function WhatsNewPage({ update, busy }: { update: UpdateCheckPayload | null; bus
   return (
     <div className="space-y-4">
       {update.releases.map((release) => (
-        <article key={release.tag_name} className="rounded-[4px] bg-card p-5 ring-1 ring-rule">
+        <article key={release.tag_name} className="rounded-2xl bg-card p-5 ring-1 ring-rule">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-[17px] font-semibold tracking-[-0.02em]">{release.name}</h3>
             <span className="text-xs text-ink-3">
@@ -737,7 +709,7 @@ function WhatsNewPage({ update, busy }: { update: UpdateCheckPayload | null; bus
             </pre>
           ) : null}
           <a
-            className="mt-3 inline-block text-sm font-medium text-verified hover:underline"
+            className="mt-3 inline-block text-sm font-medium text-accent hover:underline"
             href={release.html_url}
             target="_blank"
             rel="noreferrer"
@@ -751,32 +723,54 @@ function WhatsNewPage({ update, busy }: { update: UpdateCheckPayload | null; bus
 }
 
 function SupportPage() {
+  const [copied, setCopied] = useState(false);
+
+  async function copyWechat() {
+    try {
+      await navigator.clipboard.writeText(WECHAT_ID);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
-      <section className="rounded-[4px] bg-card p-6 ring-1 ring-rule">
-        <h2 className="text-[17px] font-semibold tracking-[-0.02em]">遇到问题</h2>
-        <p className="mt-2 text-sm leading-relaxed text-ink-2">
-          日志在 <code className="rounded bg-paper-2 px-1 py-0.5 text-[12px]">data/hotstory-app.log</code>
-          （超过 10MB 自动滚动，保留最近 3 份）。
-          研究档案与中间结果在 <code className="rounded bg-paper-2 px-1 py-0.5 text-[12px]">data/projects/</code>。
-        </p>
-        <ul className="mt-3 space-y-1.5 text-sm text-ink-2">
-          <li>· 搜索结果少：DuckDuckGo 限流，换 Tavily / Brave / Serper 并填入对应 Key。</li>
-          <li>· 提示&ldquo;已有任务在运行&rdquo;：本地默认同时只跑一条管道。</li>
-          <li>· 服务被中断：重新打开主题点击继续，已完成步骤不会重复消耗额度。</li>
-        </ul>
-      </section>
-      <section className="rounded-[4px] bg-card p-6 ring-1 ring-rule">
-        <h2 className="text-[17px] font-semibold tracking-[-0.02em]">反馈</h2>
-        <p className="mt-2 text-sm text-ink-2">在 GitHub 提 Issue 是最快的方式。</p>
-        <a
-          className="mt-3 inline-block text-sm font-medium text-verified hover:underline"
-          href={`${REPOSITORY_URL}/issues/new`}
-          target="_blank"
-          rel="noreferrer"
+      <div>
+        <p className="label">SUPPORT</p>
+        <h2 className="mt-1.5 text-[26px] font-semibold tracking-[-0.035em]">支持</h2>
+        <p className="mt-1.5 text-sm text-ink-2">遇到问题或有功能建议，可以通过微信联系。</p>
+      </div>
+
+      <section className="flex items-center gap-4 rounded-2xl bg-card p-6 ring-1 ring-rule">
+        <span className="grid size-14 shrink-0 place-items-center rounded-full bg-pending/[0.1] text-pending">
+          <svg viewBox="0 0 24 24" className="size-7" fill="currentColor">
+            <path d="M12 20s-7-4.4-7-9a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 4.6-7 9-7 9Z" />
+          </svg>
+        </span>
+        <div className="min-w-0 flex-1">
+          <span className="text-xs text-ink-3">微信号</span>
+          <strong className="mt-0.5 block text-[19px] font-semibold tracking-[-0.02em]">
+            {WECHAT_ID}
+          </strong>
+          <p className="mt-1 text-xs text-ink-2">添加时请备注“HotStory”。</p>
+        </div>
+        <button
+          className="shrink-0 rounded-xl bg-ink px-4 py-2.5 text-[13px] font-medium text-white transition hover:bg-ink-2"
+          onClick={() => void copyWechat()}
         >
-          提交 Issue
-        </a>
+          {copied ? "已复制" : "复制微信号"}
+        </button>
+      </section>
+
+      <section className="rounded-2xl bg-card p-6 ring-1 ring-rule">
+        <h3 className="text-[15px] font-semibold tracking-[-0.02em]">自助排查</h3>
+        <ul className="mt-2.5 space-y-1.5 text-sm leading-relaxed text-ink-2">
+          <li>· 搜索结果少：DuckDuckGo 限流，换成 Tavily / Brave / Serper 并填对应 Key。</li>
+          <li>· 提示“已有任务在运行”：本地同时只跑一条管道，等它结束即可。</li>
+          <li>· 服务被中断：重新打开主题点继续，已完成步骤不会重复消耗额度。</li>
+        </ul>
       </section>
     </div>
   );

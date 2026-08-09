@@ -20,25 +20,26 @@ def config_dir(tmp_path, monkeypatch):
 
 
 def test_save_and_load_roundtrip(config_dir) -> None:
-    settings_store.save_overrides({"llm_model": "  custom-model  ", "llm_concurrency": 4})
+    settings_store.save_overrides({"llm_provider": "  codex_cli  ", "search_provider": "tavily"})
     assert settings_store.load_overrides() == {
-        "llm_model": "custom-model",
-        "llm_concurrency": 4,
+        "llm_provider": "codex_cli",
+        "search_provider": "tavily",
     }
 
 
 def test_config_file_is_owner_only(config_dir) -> None:
-    settings_store.save_overrides({"llm_model": "x"})
+    settings_store.save_overrides({"llm_provider": "codex_cli"})
     path = settings_store.config_path()
     assert path.stat().st_mode & 0o777 == 0o600, "密钥文件不能对同机其他用户可读"
 
 
 def test_unknown_and_readonly_fields_are_rejected(config_dir) -> None:
+    # llm_concurrency 等参数已经不进设置界面了，只按默认值跑
     settings_store.save_overrides(
-        {"llm_model": "ok", "not_a_field": "x", "sqlite_busy_timeout_ms": 1}
+        {"llm_provider": "codex_cli", "not_a_field": "x", "llm_concurrency": 8}
     )
     stored = json.loads(settings_store.config_path().read_text(encoding="utf-8"))
-    assert stored == {"llm_model": "ok"}
+    assert stored == {"llm_provider": "codex_cli"}
 
 
 def test_clear_removes_override(config_dir) -> None:
@@ -48,14 +49,14 @@ def test_clear_removes_override(config_dir) -> None:
 
 
 def test_manual_value_beats_environment(config_dir, monkeypatch) -> None:
-    monkeypatch.setenv("LLM_MODEL", "from-env")
-    settings_store.save_overrides({"llm_model": "from-ui"})
-    assert settings_store.build_settings().llm_model == "from-ui"
+    monkeypatch.setenv("SEARCH_PROVIDER", "brave")
+    settings_store.save_overrides({"search_provider": "tavily"})
+    assert settings_store.build_settings().search_provider == "tavily"
 
 
 def test_environment_used_when_no_override(config_dir, monkeypatch) -> None:
-    monkeypatch.setenv("LLM_MODEL", "from-env")
-    assert settings_store.build_settings().llm_model == "from-env"
+    monkeypatch.setenv("SEARCH_PROVIDER", "brave")
+    assert settings_store.build_settings().search_provider == "brave"
 
 
 def test_secrets_are_masked_and_never_returned_plain(config_dir) -> None:
@@ -77,9 +78,13 @@ def test_broken_config_file_falls_back_instead_of_crashing(config_dir) -> None:
 
 
 def test_invalid_override_value_falls_back(config_dir) -> None:
-    # llm_concurrency 有 le=8 约束，越界值不能让整个应用起不来
-    settings_store.save_overrides({"llm_concurrency": 999})
-    assert settings_store.build_settings().llm_concurrency <= 8
+    # 非法值不能让整个应用起不来
+    settings_store.config_path().parent.mkdir(parents=True, exist_ok=True)
+    settings_store.config_path().write_text(
+        json.dumps({"search_provider": "duckduckgo", "llm_provider": "deepseek"}),
+        encoding="utf-8",
+    )
+    assert settings_store.build_settings().llm_provider == "deepseek"
 
 
 def test_codex_resolution_finds_non_path_install(tmp_path) -> None:
@@ -140,7 +145,7 @@ async def test_saving_settings_is_refused_while_a_task_runs(config_dir, test_set
 
     with pytest.raises(HTTPException) as error:
         await update_settings(
-            SettingsUpdateRequest(values={"llm_model": "x"}),
+            SettingsUpdateRequest(values={"llm_provider": "codex_cli"}),
             Request(),  # type: ignore[arg-type]
         )
     assert error.value.status_code == 409
@@ -175,3 +180,15 @@ async def test_update_check_reports_current_when_no_releases(monkeypatch) -> Non
     payload = await check_updates()
     assert payload.update_available is False
     assert payload.error == "", "空的 Release 列表是'已是最新'，不是错误"
+
+
+def test_only_two_models_are_offered() -> None:
+    provider = next(f for f in settings_store.SETTING_FIELDS if f.name == "llm_provider")
+    assert set(provider.options) == {"deepseek", "codex_cli"}
+
+
+def test_settings_stay_small_and_conditional() -> None:
+    # 设置项越少越好；需要填的才显示。
+    assert len(settings_store.SETTING_FIELDS) <= 6
+    conditional = [f.name for f in settings_store.SETTING_FIELDS if f.depends_on]
+    assert set(conditional) == {"deepseek_api_key", "codex_cli_path", "search_api_key"}

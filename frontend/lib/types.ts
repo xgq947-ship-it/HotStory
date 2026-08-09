@@ -219,6 +219,8 @@ export interface SettingFieldState {
   placeholder: string;
   restart_required: boolean;
   editable: boolean;
+  /** [字段名, "值1|值2"]：目标字段取到其中一个值时才显示本项 */
+  depends_on: [string, string] | null;
   value: string | number | boolean | null;
   configured: boolean;
   source: "manual" | "env" | "env_file" | "default";

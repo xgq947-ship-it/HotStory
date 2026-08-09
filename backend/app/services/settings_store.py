@@ -36,141 +36,59 @@ class SettingField:
     # 引擎在模块导入时就建好了，这些改完必须重启才生效
     restart_required: bool = False
     editable: bool = True
+    # (字段名, "值1|值2")：只有当那个字段取到其中一个值时才显示本项
+    depends_on: tuple[str, str] | None = None
 
 
 SETTING_FIELDS: tuple[SettingField, ...] = (
-    # —— 模型 ——
+    # 只保留真正需要用户决定的东西。其余按默认值跑，不进设置界面——
+    # 每多一个可填项，用户就多一次犹豫。
     SettingField(
         "llm_provider",
-        "LLM Provider",
+        "生成模型",
         "model",
         kind="select",
-        options=("deepseek", "codex_cli", "openai", "anthropic", "openai_compatible", "mock"),
-        help="codex_cli 使用本机已登录的 Codex CLI，不需要 API Key。",
+        options=("deepseek", "codex_cli"),
+        help="DeepSeek 需要 API Key；Codex 用本机已登录的 Codex CLI，不花钱。",
     ),
-    SettingField("llm_model", "模型名称", "model", placeholder="deepseek-v4-flash"),
     SettingField(
-        "llm_base_url", "Base URL", "model", placeholder="https://api.deepseek.com"
-    ),
-    SettingField("deepseek_api_key", "DeepSeek API Key", "model", kind="password", secret=True),
-    SettingField("anthropic_api_key", "Anthropic API Key", "model", kind="password", secret=True),
-    SettingField(
-        "llm_api_key",
-        "通用 API Key",
+        "deepseek_api_key",
+        "DeepSeek API Key",
         "model",
         kind="password",
         secret=True,
-        help="OpenAI / OpenAI 兼容 Provider 使用；DeepSeek 与 Anthropic 优先用上面各自的 Key。",
+        depends_on=("llm_provider", "deepseek"),
+        help="在 platform.deepseek.com 创建。",
     ),
-    SettingField("deepseek_thinking_enabled", "启用深度思考", "model", kind="boolean"),
-    SettingField(
-        "deepseek_reasoning_effort",
-        "思考强度",
-        "model",
-        kind="select",
-        options=("high", "max"),
-    ),
-    SettingField(
-        "production_deepseek_reasoning_effort",
-        "影视包思考强度",
-        "model",
-        kind="select",
-        options=("high", "max"),
-    ),
-    # —— Codex CLI ——
     SettingField(
         "codex_cli_path",
         "Codex CLI 路径",
-        "codex",
-        placeholder="codex",
-        help="留空使用 codex；可点击“自动检测”从本机常见安装位置查找。",
+        "model",
+        placeholder="留空自动查找",
+        depends_on=("llm_provider", "codex_cli"),
+        help="留空会自动查找；找不到时点下面的按钮检测。",
     ),
-    SettingField("codex_cli_model", "Codex 模型", "codex", placeholder="留空使用 CLI 默认模型"),
-    SettingField("codex_cli_timeout_seconds", "Codex 超时（秒）", "codex", kind="number"),
-    # —— 搜索与抓取 ——
     SettingField(
         "search_provider",
-        "搜索 Provider",
+        "搜索来源",
         "research",
         kind="select",
         options=("duckduckgo", "tavily", "brave", "serper"),
-        help="duckduckgo 不需要 Key，但容易限流。",
+        help="DuckDuckGo 免费但容易限流；换成其他的需要填 Key。",
     ),
-    SettingField("search_api_key", "搜索 API Key", "research", kind="password", secret=True),
     SettingField(
-        "crawler_provider",
-        "抓取 Provider",
+        "search_api_key",
+        "搜索 API Key",
         "research",
-        kind="select",
-        options=("auto", "simple_http", "crawl4ai"),
-    ),
-    SettingField(
-        "hotspot_provider",
-        "热榜来源",
-        "research",
-        kind="select",
-        options=("auto", "dailyhot", "trendradar"),
-    ),
-    SettingField("dailyhot_api_base_url", "DailyHot API", "research"),
-    SettingField("trendradar_api_base_url", "TrendRadar API", "research"),
-    # —— 质量阈值 ——
-    SettingField("min_valid_sources", "最少有效来源", "quality", kind="number"),
-    SettingField("min_verified_facts", "最少已核验事实", "quality", kind="number"),
-    SettingField("min_personal_cases", "最少个人案例", "quality", kind="number"),
-    SettingField("min_key_data", "最少关键数据", "quality", kind="number"),
-    SettingField("max_search_results", "最多搜索结果", "quality", kind="number"),
-    SettingField("search_results_per_query", "每条查询结果数", "quality", kind="number"),
-    # —— 性能 ——
-    SettingField("llm_timeout_seconds", "LLM 超时（秒）", "performance", kind="number"),
-    SettingField("llm_max_retries", "LLM 重试次数", "performance", kind="number"),
-    SettingField("llm_max_output_tokens", "LLM 最大输出 token", "performance", kind="number"),
-    SettingField("llm_concurrency", "LLM 并发", "performance", kind="number"),
-    SettingField("fetch_concurrency", "抓取并发", "performance", kind="number"),
-    SettingField("request_timeout_seconds", "抓取超时（秒）", "performance", kind="number"),
-    SettingField("max_retries", "抓取重试次数", "performance", kind="number"),
-    SettingField(
-        "max_concurrent_pipelines",
-        "同时运行的任务数",
-        "performance",
-        kind="number",
-        help="本地建议保持 1；两条管道会让所有开销翻倍。",
-    ),
-    SettingField("search_query_pause_seconds", "搜索间隔（秒）", "performance", kind="number"),
-    # —— 维护 ——
-    SettingField("llm_raw_retention", "保留原始响应数", "maintenance", kind="number"),
-    SettingField(
-        "log_level",
-        "日志级别",
-        "maintenance",
-        kind="select",
-        options=("DEBUG", "INFO", "WARNING", "ERROR"),
-        restart_required=True,
-    ),
-    SettingField(
-        "access_log",
-        "记录 HTTP 访问日志",
-        "maintenance",
-        kind="boolean",
-        restart_required=True,
-    ),
-    SettingField(
-        "sqlite_busy_timeout_ms",
-        "SQLite 忙等待（毫秒）",
-        "maintenance",
-        kind="number",
-        restart_required=True,
-        editable=False,
-        help="数据库引擎在进程启动时建立，修改需要重启应用。",
+        kind="password",
+        secret=True,
+        depends_on=("search_provider", "tavily|brave|serper"),
     ),
 )
 
 GROUP_LABELS: dict[str, str] = {
-    "model": "模型与密钥",
-    "codex": "Codex CLI",
-    "research": "搜索与抓取",
-    "quality": "质量阈值",
-    "performance": "性能",
-    "maintenance": "维护",
+    "model": "生成模型",
+    "research": "资料来源",
 }
 
 FIELDS_BY_NAME = {item.name: item for item in SETTING_FIELDS}
@@ -281,6 +199,7 @@ class FieldState:
     placeholder: str = ""
     restart_required: bool = False
     editable: bool = True
+    depends_on: list[str] | None = None
     value: Any = ""
     configured: bool = False
     source: str = "default"
@@ -314,6 +233,7 @@ def describe_settings(settings: Settings, overrides: dict[str, Any] | None = Non
             placeholder=item.placeholder,
             restart_required=item.restart_required,
             editable=item.editable,
+            depends_on=list(item.depends_on) if item.depends_on else None,
             configured=bool(plain),
             source=source,
         )
