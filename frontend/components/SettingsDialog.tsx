@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "@/lib/api";
+import {
+  checkDesktopUpdate,
+  installDesktopUpdate,
+  isDesktop,
+  relaunchDesktop,
+} from "@/lib/desktop";
 import type {
   CodexStatus,
   SettingFieldState,
@@ -23,6 +29,13 @@ const AUTO_CHECK_KEY = "hotstory.autoCheckUpdates";
 const LAST_CHECK_KEY = "hotstory.lastUpdateCheck";
 const REPOSITORY_URL = "https://github.com/xgq947-ship-it/HotStory";
 const WECHAT_ID = "Moment_oo7";
+
+type InstallState = {
+  phase: "downloading" | "done" | "error";
+  downloaded: number;
+  total: number | null;
+  message?: string;
+} | null;
 
 function NavIcon({ page, active }: { page: Page; active: boolean }) {
   const tone = active ? "currentColor" : "currentColor";
@@ -78,6 +91,9 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const [autoCheck, setAutoCheck] = useState(true);
   const [lastCheck, setLastCheck] = useState<string>("");
   const autoCheckedRef = useRef(false);
+  const [desktopUpdate, setDesktopUpdate] =
+    useState<Awaited<ReturnType<typeof checkDesktopUpdate>>>(null);
+  const [installState, setInstallState] = useState<InstallState>(null);
 
   const load = useCallback(async () => {
     try {
@@ -90,7 +106,32 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
 
   const checkUpdates = useCallback(async () => {
     setUpdateBusy(true);
+    setInstallState(null);
     try {
+      // 桌面外壳里问 updater：它读的是签名校验过的清单，比查 Releases 列表准。
+      if (isDesktop()) {
+        const found = await checkDesktopUpdate();
+        setDesktopUpdate(found);
+        const stamp = new Date().toLocaleString("zh-CN");
+        setLastCheck(stamp);
+        window.localStorage.setItem(LAST_CHECK_KEY, stamp);
+        setUpdate({
+          current_version: settings?.version ?? "",
+          latest: found
+            ? {
+                tag_name: `v${found.version}`,
+                name: `HotStory v${found.version}`,
+                html_url: `${REPOSITORY_URL}/releases/tag/v${found.version}`,
+                body: found.body ?? "",
+                published_at: "",
+              }
+            : null,
+          update_available: Boolean(found),
+          releases: [],
+          error: "",
+        });
+        return;
+      }
       const payload = await api<UpdateCheckPayload>("/settings/updates", { timeoutMs: 20000 });
       setUpdate(payload);
       const stamp = new Date().toLocaleString("zh-CN");
@@ -108,6 +149,26 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       setUpdateBusy(false);
     }
   }, [settings?.version]);
+
+  async function installUpdate() {
+    if (!desktopUpdate) return;
+    setInstallState({ phase: "downloading", downloaded: 0, total: null });
+    try {
+      await installDesktopUpdate(desktopUpdate, ({ downloaded, total }) =>
+        setInstallState({ phase: "downloading", downloaded, total }),
+      );
+      setInstallState({ phase: "done", downloaded: 0, total: null });
+      // macOS 替换完 .app 要自己重启；Windows 的安装程序会把应用带走。
+      await relaunchDesktop();
+    } catch (cause) {
+      setInstallState({
+        phase: "error",
+        downloaded: 0,
+        total: null,
+        message: cause instanceof Error ? cause.message : "更新安装失败",
+      });
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -296,6 +357,8 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                 onCheck={checkUpdates}
                 lastCheck={lastCheck}
                 onOpenWhatsNew={() => setPage("whatsnew")}
+                installState={installState}
+                onInstall={() => void installUpdate()}
               />
             ) : null}
 
@@ -557,6 +620,8 @@ function AboutPage({
   onCheck,
   lastCheck,
   onOpenWhatsNew,
+  installState,
+  onInstall,
 }: {
   version: string;
   autoCheck: boolean;
@@ -566,6 +631,8 @@ function AboutPage({
   onCheck: () => void;
   lastCheck: string;
   onOpenWhatsNew: () => void;
+  installState: InstallState;
+  onInstall: () => void;
 }) {
   return (
     <div className="space-y-8">
@@ -628,14 +695,28 @@ function AboutPage({
                 <span className="text-sm text-ink">
                   有新版本 {update.latest.tag_name}
                 </span>
-                <a
-                  className="ml-auto rounded-full bg-ink px-4 py-1.5 text-sm font-medium text-paper"
-                  href={update.latest.html_url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  前往下载
-                </a>
+                {isDesktop() ? (
+                  <button
+                    className="ml-auto rounded-full bg-ink px-4 py-1.5 text-sm font-medium text-paper transition hover:bg-ink-2 disabled:opacity-40"
+                    onClick={onInstall}
+                    disabled={installState?.phase === "downloading"}
+                  >
+                    {installState?.phase === "downloading"
+                      ? installState.total
+                        ? `下载中 ${Math.round((installState.downloaded / installState.total) * 100)}%`
+                        : "下载中…"
+                      : "下载并安装"}
+                  </button>
+                ) : (
+                  <a
+                    className="ml-auto rounded-full bg-ink px-4 py-1.5 text-sm font-medium text-paper"
+                    href={update.latest.html_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    前往下载
+                  </a>
+                )}
               </>
             ) : (
               <>
@@ -657,6 +738,12 @@ function AboutPage({
               立即检查
             </button>
           </div>
+
+          {installState?.phase === "error" ? (
+            <p className="border-t border-rule px-5 py-3 text-xs text-pending">
+              {installState.message}
+            </p>
+          ) : null}
 
           {lastCheck ? (
             <p className="border-t border-rule px-5 py-3.5 text-xs text-ink-3">
