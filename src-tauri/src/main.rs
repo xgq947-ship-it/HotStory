@@ -152,6 +152,9 @@ fn spawn_backend(runtime: &Path, data_dir: &Path, port: u16) -> std::io::Result<
                 database.to_string_lossy().replace('\\', "/")
             ),
         )
+        // 安装后的 .app 是已签名封装，运行时不得再往 Resources 写入 .pyc，
+        // 否则第二次启动时 macOS 会判定代码签名已被修改。
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONUNBUFFERED", "1")
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(error_log));
