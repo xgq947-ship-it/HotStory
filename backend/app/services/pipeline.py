@@ -67,6 +67,8 @@ class Pipeline:
         self.session_factory = session_factory or SessionLocal
         self.tracker = StepTracker()
         self._production_llm_cache: tuple[LLMService, str] | None = None
+        # prepare_production 记下这次是续跑还是重做，_production 取用后清掉。
+        self._production_reuse: dict[str, bool] = {}
 
     async def aclose(self) -> None:
         await aclose(self._llm_client, self._crawl_client)
@@ -449,9 +451,16 @@ class Pipeline:
                 self.store.save_text(session, topic.id, "script", script)
                 session.commit()
                 review = await reviewer.review(session, topic, script)
-                fallback_used = True
             script_meta = self.store.load_json(session, topic.id, "script_meta") or {}
             fallback_used = script_meta.get("generation_mode") == "deterministic_fallback"
+            # 保底稿格式完美、事实全带 ID，审校往往给高分。分数不能掩盖"这不是模型
+            # 写的"这件事：显式记一条阻断项，让剧本页和生产页在生成之前就能提示。
+            fallback_reason = script_meta.get("reason", "") or "原因未记录"
+            upstream_blockers = (
+                [f"剧本层是确定性保底稿，不是模型产出：{fallback_reason}"]
+                if fallback_used
+                else []
+            )
             self.store.save_json(
                 session,
                 topic.id,
@@ -460,6 +469,7 @@ class Pipeline:
                     **review.model_dump(mode="json"),
                     "rewrite_count": rewrite_count,
                     "fallback_used": fallback_used,
+                    "upstream_blockers": upstream_blockers,
                     "script_generation_mode": script_meta.get(
                         "generation_mode", "legacy"
                     ),
@@ -502,6 +512,7 @@ class Pipeline:
             return
         try:
             production_llm, llm_profile = self._production_llm()
+            reuse = self._production_reuse.pop(topic.id, True)
             package = await ProductionPackageBuilder(
                 production_llm,
                 self.store,
@@ -509,7 +520,7 @@ class Pipeline:
                 planning_llm=llm,
                 llm_profile=llm_profile,
             ).build(
-                session, topic, topic.requested_duration
+                session, topic, topic.requested_duration, reuse=reuse
             )
             self.store.save_json(session, topic.id, "production_package", package)
             session.commit()
@@ -565,7 +576,7 @@ class Pipeline:
             self.tracker.reset_from(session, topic, "write")
             return topic
 
-    def prepare_production(self, topic_id: str) -> Topic:
+    def prepare_production(self, topic_id: str, mode: str = "resume") -> Topic:
         with self.session_factory() as session:
             topic = session.get(Topic, topic_id)
             if not topic:
@@ -584,6 +595,8 @@ class Pipeline:
                 start_step = "write"
             else:
                 start_step = "production"
+            # 上游要重跑的话，新剧本会让所有单元指纹失效，续跑没有意义。
+            self._production_reuse[topic_id] = mode != "full" and start_step == "production"
             self.tracker.reset_from(session, topic, start_step)
             return topic
 

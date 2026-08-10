@@ -14,6 +14,7 @@ from app.schemas.domain import (
     HealthResponse,
     HotspotData,
     ProductionPackageData,
+    ProductionRequest,
     RegenerateShotRequest,
     ResearchRequest,
     RewriteScriptRequest,
@@ -364,6 +365,7 @@ def download_production_package(
 )
 async def generate_production_package(
     topic_id: str,
+    payload: ProductionRequest | None = None,
     session: Session = Depends(get_session),
     runner: PipelineRunner = Depends(get_runner),
     store: ProjectStore = Depends(get_store),
@@ -376,9 +378,15 @@ async def generate_production_package(
     if not store.load_text(session, topic_id, "script"):
         raise HTTPException(status_code=409, detail="剧本尚未生成")
     require_capacity(runner, topic_id)
-    runner.pipeline.prepare_production(topic_id)
+    mode = (payload or ProductionRequest()).mode
+    runner.pipeline.prepare_production(topic_id, mode)
     start_pipeline(runner, topic_id)
-    return AcceptedResponse(topic_id=topic_id, message="正在生成 10 秒多镜头影视包")
+    return AcceptedResponse(
+        topic_id=topic_id,
+        message=(
+            "正在补齐缺失的生成单元" if mode == "resume" else "正在重做 10 秒多镜头影视包"
+        ),
+    )
 
 
 @router.post(

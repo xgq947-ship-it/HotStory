@@ -326,6 +326,12 @@ class ShotPromptBatch(BaseModel):
 class CinematicShotData(ShotPlanDraft):
     duration_seconds: int = Field(ge=1, le=10)
     prompt_body_template: str
+    # 未拼音频、未做合规改写的正文。复用时喂回后处理链，保证新旧单元走完全相同的路径。
+    prompt_body_core: str = ""
+    # 没有这个字段，模板兜底的正文会被当成"已生成"永久复用，永远回不到 AI 版本。
+    prompt_source: Literal["ai_optimized", "template_fallback", "unknown"] = "unknown"
+    # shot_id 是位置派生的，不能当缓存键；指纹覆盖真正喂给模型的全部输入。
+    prompt_fingerprint: str = ""
     ambient_audio: str = ""
     target_model: str = "Seedance 2.0/2.5 / Higgsfield Seedance"
     optimized_by: str = "acting-ai-video + cinedance-higgsfield"
@@ -383,6 +389,10 @@ class ProductionPackageData(BaseModel):
         "ai_generated", "deterministic_fallback", "legacy"
     ] = "legacy"
     generation_mode: Literal["ai_optimized", "mixed", "fallback"] = "ai_optimized"
+    # 规划层（角色 + 分镜）的复用凭证：剧本、素材、时长、档位、SKILL 原文任一变化即失效。
+    plan_fingerprint: str = ""
+    plan_source: Literal["ai_generated", "template_fallback", "unknown"] = "unknown"
+    reused_unit_count: int = 0
     ready_for_generation: bool = False
     readiness: ProductionReadinessData = Field(default_factory=ProductionReadinessData)
     narrative_quality: NarrativeQualityData = Field(default_factory=NarrativeQualityData)
@@ -458,6 +468,12 @@ class RewriteScriptRequest(BaseModel):
 
 class RegenerateShotRequest(BaseModel):
     current_prompt: str = ""
+
+
+class ProductionRequest(BaseModel):
+    # resume：复用上一版已通过校验的单元，只补缺的；full：整包重做。
+    mode: Literal["resume", "full"] = "resume"
+
 
 
 class AcceptedResponse(BaseModel):

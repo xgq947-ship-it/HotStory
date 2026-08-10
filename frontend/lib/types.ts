@@ -163,6 +163,7 @@ export interface ScriptPayload {
     passed: boolean;
     rewrite_count?: number;
     fallback_used?: boolean;
+    upstream_blockers?: string[];
     script_generation_mode?: "ai_generated" | "deterministic_fallback" | "legacy";
     generation_reason?: string;
     causality_score?: number;
@@ -253,6 +254,9 @@ export interface CinematicShot {
   format_mode: "single_take" | "controlled_multishot";
   internal_shots: InternalShot[];
   prompt_body_template: string;
+  prompt_body_core?: string;
+  prompt_source?: "ai_optimized" | "template_fallback" | "unknown";
+  prompt_fingerprint?: string;
   ambient_audio: string;
   target_model: string;
   optimized_by: string;
@@ -316,6 +320,9 @@ export interface ProductionPackage {
   story_generation_mode: "ai_generated" | "deterministic_fallback" | "legacy";
   script_generation_mode: "ai_generated" | "deterministic_fallback" | "legacy";
   generation_mode: "ai_optimized" | "mixed" | "fallback";
+  plan_fingerprint?: string;
+  plan_source?: "ai_generated" | "template_fallback" | "unknown";
+  reused_unit_count?: number;
   ready_for_generation: boolean;
   readiness: ProductionReadiness;
   narrative_quality: NarrativeQuality;
@@ -328,6 +335,8 @@ export interface ProductionPackage {
   characters: CharacterAsset[];
   shots: CinematicShot[];
 }
+
+export type ProductionMode = "resume" | "full";
 
 export interface HealthPayload {
   status: string;

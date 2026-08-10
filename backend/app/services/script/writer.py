@@ -14,8 +14,23 @@ from app.services.script.context import narrative_context
 from app.utils import stable_json
 
 FACT_ID_PATTERN = re.compile(r"\bfact_[a-f0-9]{16}\b")
+DASH = r"[—–~～-]"
+# 标题后面常挂一个说明，例如 `### 00:00 - 00:05（钩子·5秒）`。
+HEADING_SUFFIX = r"(?:\s*[（(][^）)]*[）)])?"
 SECOND_RANGE_HEADING = re.compile(
-    r"(?m)^###\s*(\d{1,3})\s*[—–-]\s*(\d{1,3})\s*秒\s*$"
+    rf"(?m)^#{{2,}}\s*(\d{{1,3}})\s*{DASH}\s*(\d{{1,3}})\s*秒{HEADING_SUFFIX}\s*$"
+)
+# 时间码写对了、标题层级写成三级的情况。下游只认二级标题。
+CLOCK_RANGE_HEADING = re.compile(
+    rf"(?m)^#{{2,}}\s*(\d{{1,3}}):(\d{{2}})\s*{DASH}\s*(\d{{1,3}}):(\d{{2}})"
+    rf"{HEADING_SUFFIX}\s*$"
+)
+# 模型经常把时间窗写成行内标记而不是独立标题。两种写法都要认。
+INLINE_CLOCK_RANGE = re.compile(
+    rf"[【\[（(]\s*(\d{{1,3}}):(\d{{2}})\s*{DASH}\s*(\d{{1,3}}):(\d{{2}})\s*[】\]）)]"
+)
+INLINE_SECOND_RANGE = re.compile(
+    rf"[【\[（(]\s*(\d{{1,3}})\s*{DASH}\s*(\d{{1,3}})\s*秒\s*[】\]）)]"
 )
 REQUIRED_SCRIPT_MARKERS = (
     "### 旁白",
@@ -24,16 +39,108 @@ REQUIRED_SCRIPT_MARKERS = (
     "### 事实依据",
     "## 结尾",
 )
+TIMECODE_HEADING_LINE = re.compile(
+    r"^\s*##\s*(\d{1,3}):(\d{2})\s*-\s*(\d{1,3}):(\d{2})\s*$"
+)
+START_HEADING_PATTERN = re.compile(r"##\s+00:00\s*-\s*00:\d{2}")
+PUBLIC_ID_PATTERN = re.compile(r"\b(?:event|source)_[a-f0-9]{16}\b")
+
+
+def _timecode_heading(start: int, end: int) -> str:
+    return f"## {start // 60:02d}:{start % 60:02d} - {end // 60:02d}:{end % 60:02d}"
+
+
+def _inline_window(line: str, *, anchored: bool) -> tuple[tuple[int, int], re.Match[str]] | None:
+    """Read a 【0:00—0:05】/【0—5秒】 marker. `anchored` requires it to open the line."""
+    probe = line.lstrip() if anchored else line
+    for pattern, to_seconds in (
+        (
+            INLINE_CLOCK_RANGE,
+            lambda m: (
+                int(m.group(1)) * 60 + int(m.group(2)),
+                int(m.group(3)) * 60 + int(m.group(4)),
+            ),
+        ),
+        (INLINE_SECOND_RANGE, lambda m: (int(m.group(1)), int(m.group(2)))),
+    ):
+        match = pattern.match(probe) if anchored else pattern.search(probe)
+        if match:
+            return to_seconds(match), match
+    return None
+
+
+def hoist_inline_timecodes(script: str) -> str:
+    """把行内时间码提升成独立的 `## MM:SS - MM:SS` 段落标题。
+
+    位置很关键：标记通常落在 `### 旁白` 的下一行，就地替换会把二级标题嵌进三级
+    小节里，下游 `TIME_SEGMENT_PATTERN` 会从旁白正文中间切段而不报错。所以必须
+    提到 `###` 标题之上。旁白与镜头共用同一个时间窗，只有第一次开新段。
+
+    模型也经常混着写：正确的 `## MM:SS - MM:SS` 标题下面又留一个行内标记。已经
+    开着的窗口必须记下来，否则会再补一个同样的标题，切出一个空段落。
+    """
+    lines = script.splitlines()
+    result: list[str] = []
+    current: tuple[int, int] | None = None
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.lstrip().startswith("###"):
+            existing = TIMECODE_HEADING_LINE.match(line)
+            if existing:
+                current = (
+                    int(existing.group(1)) * 60 + int(existing.group(2)),
+                    int(existing.group(3)) * 60 + int(existing.group(4)),
+                )
+            result.append(line)
+            index += 1
+            continue
+        heading = line
+        carried = _inline_window(heading, anchored=False)
+        if carried:
+            window, match = carried
+            heading = (heading[: match.start()] + heading[match.end() :]).rstrip()
+            body: list[str] = []
+            consumed = index
+        else:
+            probe = index + 1
+            while probe < len(lines) and not lines[probe].strip():
+                probe += 1
+            anchored = (
+                _inline_window(lines[probe], anchored=True) if probe < len(lines) else None
+            )
+            if not anchored:
+                result.append(line)
+                index += 1
+                continue
+            window, match = anchored
+            stripped = lines[probe].lstrip()
+            body = [*lines[index + 1 : probe], stripped[match.end() :].lstrip()]
+            consumed = probe
+        if window != current:
+            current = window
+            result.extend([_timecode_heading(*window), ""])
+        result.append(heading)
+        result.extend(body)
+        index = consumed + 1
+    return "\n".join(result)
 
 
 def normalize_script_format(script: str) -> str:
     """Keep model prose while enforcing the public event/source citation format."""
 
-    def timecode(match: re.Match[str]) -> str:
-        start, end = (int(match.group(1)), int(match.group(2)))
-        return f"## {start // 60:02d}:{start % 60:02d} - {end // 60:02d}:{end % 60:02d}"
+    def seconds_heading(match: re.Match[str]) -> str:
+        return _timecode_heading(int(match.group(1)), int(match.group(2)))
 
-    normalized = SECOND_RANGE_HEADING.sub(timecode, script)
+    def clock_heading(match: re.Match[str]) -> str:
+        return _timecode_heading(
+            int(match.group(1)) * 60 + int(match.group(2)),
+            int(match.group(3)) * 60 + int(match.group(4)),
+        )
+
+    normalized = SECOND_RANGE_HEADING.sub(seconds_heading, script)
+    normalized = CLOCK_RANGE_HEADING.sub(clock_heading, normalized)
+    normalized = hoist_inline_timecodes(normalized)
     normalized = re.sub(rf"{FACT_ID_PATTERN.pattern}\s*/\s*", "", normalized)
     normalized = re.sub(rf"\s*/\s*{FACT_ID_PATTERN.pattern}", "", normalized)
     normalized = FACT_ID_PATTERN.sub("", normalized)
@@ -41,13 +148,26 @@ def normalize_script_format(script: str) -> str:
     return normalized.strip()
 
 
+def script_format_issues(script: str) -> list[str]:
+    """列出具体缺什么。只回一个 bool 的话，落库的 reason 无法诊断。"""
+    issues: list[str] = []
+    if len(script.strip()) < 200:
+        issues.append("剧本正文过短或为空")
+    for marker in REQUIRED_SCRIPT_MARKERS:
+        if marker not in script:
+            issues.append(f"缺少必需小节标题 `{marker}`")
+    if not START_HEADING_PATTERN.search(script):
+        issues.append(
+            "缺少 `## 00:00 - 00:MM` 起始时间码标题："
+            "每段必须以独立成行的 `## MM:SS - MM:SS` 开头，不能写成行内 `【0:00—0:05】`"
+        )
+    if not PUBLIC_ID_PATTERN.search(script):
+        issues.append("`### 事实依据` 缺少真实 event_id / source_id 引用")
+    return issues
+
+
 def script_is_complete(script: str) -> bool:
-    return bool(
-        len(script.strip()) >= 200
-        and all(marker in script for marker in REQUIRED_SCRIPT_MARKERS)
-        and re.search(r"##\s+00:00\s*-\s*00:\d{2}", script)
-        and re.search(r"\b(?:event|source)_[a-f0-9]{16}\b", script)
-    )
+    return not script_format_issues(script)
 
 
 def _safe_error(error: Exception) -> str:
@@ -76,16 +196,37 @@ class ScriptWriter:
                     prompt,
                 )
             )
-            if not script_is_complete(script):
-                raise RuntimeError("上游剧本为空或缺少因果节拍格式")
+        except Exception as error:
+            # 上游真的挂了（401 / 超时 / 空返回），没有可修的内容，直接保底。
+            return self._save_fallback(session, topic, context, duration, _safe_error(error))
+
+        issues = script_format_issues(script)
+        if not issues:
             self._save_meta(session, topic, "ai_generated")
             return script
+        # 模型写出了内容、只是格式没对上，别把它当成"上游挂了"。先花一次调用补格式。
+        try:
+            return await self.rewrite(session, topic, script, issues, duration)
         except Exception as error:
-            script = self._fallback(context, duration)
-            self._save_meta(
-                session, topic, "deterministic_fallback", reason=_safe_error(error)
+            return self._save_fallback(
+                session,
+                topic,
+                context,
+                duration,
+                f"剧本格式不达标（{'；'.join(issues)[:160]}）；自动补格式失败：{_safe_error(error)}",
             )
-            return script
+
+    def _save_fallback(
+        self,
+        session: Session,
+        topic: Topic,
+        context: dict,
+        duration: int,
+        reason: str,
+    ) -> str:
+        script = self._fallback(context, duration)
+        self._save_meta(session, topic, "deterministic_fallback", reason=reason)
+        return script
 
     def safe_fallback(
         self,
@@ -347,7 +488,8 @@ class ScriptWriter:
                 prompt,
             )
         )
-        if not script_is_complete(rewritten):
-            raise RuntimeError("重写结果为空或缺少因果节拍格式")
+        remaining = script_format_issues(rewritten)
+        if remaining:
+            raise RuntimeError("重写结果仍不合格：" + "；".join(remaining))
         self._save_meta(session, topic, "ai_generated")
         return rewritten

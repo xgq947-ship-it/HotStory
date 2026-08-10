@@ -36,7 +36,7 @@ from app.services.production.compliance import (
 from app.services.production.skills import VerbatimSkill, load_verbatim_skill
 from app.services.prompts import render_prompt
 from app.services.script.context import narrative_context
-from app.utils import stable_json
+from app.utils import sha256_text, stable_json
 
 TIME_SEGMENT_PATTERN = re.compile(
     r"(?ms)^##\s*(\d{2}):(\d{2})\s*-\s*(\d{2}):(\d{2})\s*$\n(.*?)(?=^##\s|\Z)"
@@ -181,7 +181,12 @@ class ProductionPackageBuilder:
         self.compliance_hits: list[ComplianceHit] = []
 
     async def build(
-        self, session: Session, topic: Topic, duration: int
+        self,
+        session: Session,
+        topic: Topic,
+        duration: int,
+        *,
+        reuse: bool = True,
     ) -> ProductionPackageData:
         self._reset_diagnostics()
         self._load_verbatim_skills()
@@ -202,7 +207,30 @@ class ProductionPackageBuilder:
             and review.get("passed", False)
         )
         target_unit_count = self._target_generation_unit_count(duration)
-        if upstream_ready:
+        plan_fingerprint = self._plan_fingerprint(script, context, duration)
+        previous = self._previous_package(session, topic) if reuse else None
+        plan_reusable = bool(
+            previous is not None
+            and previous.plan_source == "ai_generated"
+            and previous.plan_fingerprint
+            and previous.plan_fingerprint == plan_fingerprint
+            and len(previous.shots) == target_unit_count
+        )
+        plan_source = "template_fallback"
+        if upstream_ready and plan_reusable and previous is not None:
+            # 剧本、素材、时长、档位和 SKILL 原文都没变，角色与分镜两次高成本调用可以整个跳过。
+            style_bible = previous.style_bible
+            characters = list(previous.characters)
+            shot_plan = [
+                ShotPlanDraft.model_validate(
+                    shot.model_dump(mode="json", include=set(ShotPlanDraft.model_fields))
+                )
+                for shot in previous.shots
+            ]
+            audio_plan = previous.audio_plan
+            plan_source = "ai_generated"
+        elif upstream_ready:
+            planning_failures = self.ai_failures
             style_bible, characters = await self._build_characters(
                 session, topic, script, context
             )
@@ -215,6 +243,8 @@ class ProductionPackageBuilder:
                 duration,
                 target_unit_count,
             )
+            if self.ai_failures == planning_failures:
+                plan_source = "ai_generated"
         else:
             self.ai_failures += 1
             self.warnings.append(
@@ -246,6 +276,20 @@ class ProductionPackageBuilder:
                 "低成本节奏样片未通过，已跳过逐生成单元高成本模型调用："
                 + "；".join(animatic.issues[:3])
             )
+        # 和 AI 调用同一个门。上游没过时这个包只用于诊断，掺入旧的 AI 正文会让
+        # 它看起来比实际更完整。
+        reusable_bodies = (
+            self._reusable_bodies(
+                previous, shot_plan, style_bible, characters, audio_plan, plan_fingerprint
+            )
+            if previous is not None and shot_prompt_ready
+            else {}
+        )
+        if reusable_bodies:
+            self.warnings.append(
+                f"已复用上一版通过校验的 {len(reusable_bodies)} 个生成单元提示词，"
+                "本次只重新生成缺失或失效的单元。"
+            )
         shots = await self._build_shot_prompts(
             session,
             topic,
@@ -256,8 +300,10 @@ class ProductionPackageBuilder:
             shot_plan,
             audio_plan,
             allow_ai=shot_prompt_ready,
+            reusable_bodies=reusable_bodies,
+            plan_fingerprint=plan_fingerprint,
         )
-        production_mode = self._generation_mode()
+        production_mode = self._generation_mode(shots)
         readiness = self._build_readiness(
             story=story,
             review=review,
@@ -278,12 +324,15 @@ class ProductionPackageBuilder:
             story_generation_mode=story.get("generation_mode", "legacy"),
             script_generation_mode=script_meta.get("generation_mode", "legacy"),
             generation_mode=production_mode,
+            plan_fingerprint=plan_fingerprint,
+            plan_source=plan_source,
+            reused_unit_count=len(reusable_bodies),
             ready_for_generation=readiness.passed,
             readiness=readiness,
             narrative_quality=story_quality,
             animatic=animatic,
             audio_plan=audio_plan,
-            warnings=self._warnings_with_compliance(),
+            warnings=self._warnings_with_compliance(shots),
             style_bible=style_bible,
             skills=[
                 SkillStageData(
@@ -333,6 +382,10 @@ class ProductionPackageBuilder:
         if not script.strip():
             raise RuntimeError("缺少已通过审校的剧本")
         context = narrative_context(session, topic, self.store)
+        story = context.get("story_arc", {})
+        review = self.store.load_json(session, topic.id, "review") or {}
+        script_meta = self.store.load_json(session, topic.id, "script_meta") or {}
+        self._record_upstream_fallbacks(story, script_meta)
         previous = package.shots[shot_index]
         safe_current_prompt = self._prompt_body_only(
             self._replace_people(
@@ -355,32 +408,29 @@ class ProductionPackageBuilder:
             step_prefix=f"production:regenerate:{shot_id}:r{previous.revision + 1}",
             previous_prompts={shot_id: safe_current_prompt} if safe_current_prompt else {},
             previous_ambient={shot_id: previous.ambient_audio},
+            previous_sources={shot_id: previous.prompt_source},
+            plan_fingerprint=package.plan_fingerprint,
         )
         replacement = regenerated[0].model_copy(
             update={"revision": previous.revision + 1}
         )
         package.shots[shot_index] = replacement
         package.generated_at = datetime.now(UTC).isoformat()
-        if self.warnings:
-            package.warnings = list(dict.fromkeys([*package.warnings, *self.warnings]))
-            if package.generation_mode == "ai_optimized":
-                package.generation_mode = "mixed"
-            package.ready_for_generation = False
-            blockers = list(
-                dict.fromkeys(
-                    [
-                        *package.readiness.blockers,
-                        "当前镜头重新优化没有通过完整控制校验",
-                    ]
-                )
-            )
-            package.readiness = ProductionReadinessData(
-                passed=False,
-                score=max(0, 100 - 18 * len(blockers)),
-                blockers=blockers,
-            )
-        elif package.generation_mode == "fallback":
+        # 状态全部重新派生。以前这里往 blockers 里 append 且从不清除，逐个单元修完
+        # 之后包也永远回不到就绪。
+        package.warnings = self._warnings_with_compliance(package.shots)
+        package.generation_mode = self._generation_mode(package.shots)
+        package.readiness = self._build_readiness(
+            story=story,
+            review=review,
+            script_meta=script_meta,
+            animatic=package.animatic,
+            production_mode=package.generation_mode,
+        )
+        if not package.readiness.passed and package.generation_mode == "ai_optimized":
             package.generation_mode = "mixed"
+        package.ready_for_generation = package.readiness.passed
+        package.reused_unit_count = 0
         return package
 
     async def _build_characters(
@@ -1049,9 +1099,16 @@ class ProductionPackageBuilder:
         step_prefix: str = "production:shots",
         previous_prompts: dict[str, str] | None = None,
         previous_ambient: dict[str, str] | None = None,
+        previous_sources: dict[str, str] | None = None,
+        reusable_bodies: dict[str, tuple[str, str]] | None = None,
+        plan_fingerprint: str = "",
     ) -> list[CinematicShotData]:
         by_id = {item.id: item for item in characters}
-        generated: dict[str, tuple[str, str]] = {}
+        # 复用的正文直接进 generated，后处理链（人物锚点 → 设备几何 → 音频 → 合规）
+        # 照常重跑，所以复用单元和新生成单元走的是完全相同的路径。
+        reused = dict(reusable_bodies or {})
+        generated: dict[str, tuple[str, str]] = dict(reused)
+        ai_ready_ids: set[str] = set(reused)
         skill_ready = allow_ai and {
             "acting-ai-video",
             "cinedance-higgsfield",
@@ -1077,9 +1134,11 @@ class ProductionPackageBuilder:
                     "跨切保持身份、空间、视线、道具、光线和动作连续。"
                 ),
             }
+        # 批次必须切在"待生成集合"上。切在全量计划上的话，9 个单元命中 7 个还是发 3 批。
+        pending = [shot for shot in shot_plan if shot.shot_id not in reused]
         batch_requests: list[tuple[int, list[ShotPlanDraft], str]] = []
-        for offset in range(0, len(shot_plan), 4):
-            chunk = shot_plan[offset : offset + 4]
+        for offset in range(0, len(pending), 4):
+            chunk = pending[offset : offset + 4]
             if not skill_ready:
                 continue
             active_ids = {
@@ -1199,6 +1258,7 @@ class ProductionPackageBuilder:
                             candidate,
                             item.ambient_audio.strip(),
                         )
+                        ai_ready_ids.add(item.shot_id)
                 if lossless_failures:
                     self._record_ai_failure(
                         stage,
@@ -1231,6 +1291,15 @@ class ProductionPackageBuilder:
                     ),
                 ),
             )
+            # 复用时喂回后处理链的就是这份正文，所以它必须在任何拼接之前留存。
+            prompt_body_core = body
+            if plan.shot_id in ai_ready_ids:
+                prompt_source = "ai_optimized"
+            elif plan.shot_id in generated or preserved_body:
+                # 模型这轮没交付，保留了上一版正文；来源沿用上一版的判定。
+                prompt_source = (previous_sources or {}).get(plan.shot_id, "unknown")
+            else:
+                prompt_source = "template_fallback"
             body = REFERENCE_TAG_PATTERN.sub("参考角色", body)
             body = self._remove_shot_labels(self._remove_internal_ids(body))
             body = self._replace_people(body, known_people, "当事人")
@@ -1271,6 +1340,11 @@ class ProductionPackageBuilder:
                     **plan.model_dump(),
                     duration_seconds=plan.end_second - plan.start_second,
                     prompt_body_template=body,
+                    prompt_body_core=prompt_body_core,
+                    prompt_source=prompt_source,
+                    prompt_fingerprint=self._unit_fingerprint(
+                        plan, by_id, style_bible, audio_plan, plan_fingerprint
+                    ),
                     ambient_audio=ambient,
                 )
             )
@@ -2023,6 +2097,115 @@ class ProductionPackageBuilder:
             return package, False
         return package.model_copy(update={"shots": shots}), True
 
+    def _previous_package(
+        self, session: Session, topic: Topic
+    ) -> ProductionPackageData | None:
+        raw = self.store.load_json(session, topic.id, "production_package")
+        if not raw:
+            return None
+        try:
+            return ProductionPackageData.model_validate(raw)
+        except Exception:
+            # 老包 schema 对不上就当没有，重建总是安全的。
+            return None
+
+    def _plan_fingerprint(self, script: str, context: dict, duration: int) -> str:
+        return sha256_text(
+            stable_json(
+                {
+                    "script": sha256_text(script),
+                    "context": sha256_text(stable_json(context)),
+                    "duration": duration,
+                    "llm_profile": self.llm_profile,
+                    "skills": {
+                        name: self._skill_sha256(name)
+                        for name in (
+                            "lira-image-prompts",
+                            "acting-ai-video",
+                            "cinedance-higgsfield",
+                        )
+                    },
+                }
+            )
+        )
+
+    def _unit_fingerprint(
+        self,
+        plan: ShotPlanDraft,
+        by_id: dict[str, CharacterAssetData],
+        style_bible: str,
+        audio_plan: GlobalAudioPlanData,
+        plan_fingerprint: str,
+    ) -> str:
+        """覆盖真正喂给模型的全部输入。
+
+        套上 plan_fingerprint 是有意为之：它含剧本与素材摘要，所以剧本一改，所有
+        单元一律失效重生成。规划层偶尔会产出字面相同的计划，只比对计划的话，旧提示词
+        会挂在新剧本上——这个项目里提示词必须能追溯到那一版审校过的剧本。
+        """
+        return sha256_text(
+            stable_json(
+                {
+                    "plan_fingerprint": plan_fingerprint,
+                    "plan": plan.model_dump(mode="json"),
+                    "style_bible": style_bible,
+                    "characters": [
+                        {
+                            "id": by_id[character_id].id,
+                            "reference_token": by_id[character_id].reference_token,
+                            "visual_anchor": by_id[character_id].visual_anchor,
+                            "wardrobe_anchor": by_id[character_id].wardrobe_anchor,
+                            "voice_prompt": by_id[character_id].voice_prompt,
+                        }
+                        for character_id in sorted(plan.active_character_ids)
+                        if character_id in by_id
+                    ],
+                    "audio_plan": audio_plan.model_dump(mode="json"),
+                    "skills": {
+                        name: self._skill_sha256(name)
+                        for name in ("acting-ai-video", "cinedance-higgsfield")
+                    },
+                    "llm_profile": self.llm_profile,
+                }
+            )
+        )
+
+    def _reusable_bodies(
+        self,
+        previous: ProductionPackageData,
+        shot_plan: list[ShotPlanDraft],
+        style_bible: str,
+        characters: list[CharacterAssetData],
+        audio_plan: GlobalAudioPlanData,
+        plan_fingerprint: str,
+    ) -> dict[str, tuple[str, str]]:
+        """挑出可以原样复用的单元：指纹一致、来源是 AI、且对新计划仍然合法。"""
+        by_id = {item.id: item for item in characters}
+        by_fingerprint = {
+            shot.prompt_fingerprint: shot
+            for shot in previous.shots
+            if shot.prompt_fingerprint
+            and shot.prompt_source == "ai_optimized"
+            and shot.prompt_body_core.strip()
+        }
+        reusable: dict[str, tuple[str, str]] = {}
+        for plan in shot_plan:
+            candidate = by_fingerprint.get(
+                self._unit_fingerprint(
+                    plan, by_id, style_bible, audio_plan, plan_fingerprint
+                )
+            )
+            if not candidate:
+                continue
+            # 内部镜头数量和 0:NN 时间点都在这里校验：旧正文对新计划可能已经不合法。
+            if not self._prompt_control_complete(candidate.prompt_body_core, plan):
+                continue
+            reusable[plan.shot_id] = (
+                candidate.prompt_body_core,
+                candidate.ambient_audio,
+            )
+        return reusable
+
     def _reset_diagnostics(self) -> None:
         self.warnings = []
         self.ai_successes = 0
@@ -2045,9 +2228,10 @@ class ProductionPackageBuilder:
         source = self.skill_sources.get(name)
         return source.sha256 if source else ""
 
-    @staticmethod
-    def _prompt_body_only(prompt: str) -> str:
-        return re.split(r"\n音频(?:（[^\n]*）)?\s*\n", prompt, maxsplit=1)[0].strip()
+    @classmethod
+    def _prompt_body_only(cls, prompt: str) -> str:
+        """从用户编辑过的整段提示词里取出正文。切法必须和落盘时的一致，否则会漂移。"""
+        return cls._split_visual_audio(prompt)[0]
 
     @staticmethod
     def _prompt_control_complete(prompt: str, plan: ShotPlanDraft) -> bool:
@@ -2128,13 +2312,22 @@ class ProductionPackageBuilder:
         self.warnings.append(f"{stage}未完成 AI 优化，已使用安全模板：{message[:240]}")
         self.ai_failures += 1
 
-    def _warnings_with_compliance(self) -> list[str]:
+    def _warnings_with_compliance(self, shots: list[CinematicShotData]) -> list[str]:
         """合规改写必须可见：这个项目不做静默修改。"""
         warnings = list(self.warnings)
         if self.compliance_hits:
             warnings.append(
                 f"已按视频平台审核规则改写风险表述（{summarize(self.compliance_hits)}），"
                 "表演结构与控制信息未改动。"
+            )
+        # 单元状态也要派生成一条可读原因。单独重做一个镜头时 self.warnings 是空的，
+        # 只靠它的话界面会显示"混合优化模式"却给不出任何原因。
+        pending = [shot for shot in shots if shot.prompt_source != "ai_optimized"]
+        if pending:
+            warnings.append(
+                f"还有 {len(pending)} 个生成单元使用安全模板："
+                + "、".join(shot.shot_id for shot in pending[:6])
+                + "。点击“继续生成未完成的”只会重跑这些单元。"
             )
         return warnings
 
@@ -2181,9 +2374,14 @@ class ProductionPackageBuilder:
             blockers=blockers,
         )
 
-    def _generation_mode(self) -> str:
-        if self.ai_failures == 0:
+    def _generation_mode(self, shots: list[CinematicShotData]) -> str:
+        """从每个单元的实际来源推导，而不是靠调用计数累加。
+
+        增量续跑下计数器只反映"本次做了什么"，判断成片状态必须看"现在包里是什么"。
+        """
+        ai_units = [shot for shot in shots if shot.prompt_source == "ai_optimized"]
+        if self.ai_failures == 0 and len(ai_units) == len(shots) and shots:
             return "ai_optimized"
-        if self.ai_successes == 0:
+        if self.ai_successes == 0 and not ai_units:
             return "fallback"
         return "mixed"

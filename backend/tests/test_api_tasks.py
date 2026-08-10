@@ -7,7 +7,7 @@ import pytest
 from app.api.router import generate_production_package, rewrite_script, start_research
 from app.config import Settings
 from app.models import Topic
-from app.schemas.domain import ResearchRequest, RewriteScriptRequest
+from app.schemas.domain import ProductionRequest, ResearchRequest, RewriteScriptRequest
 from app.services.artifacts import ProjectStore
 from app.services.pipeline import PipelineRunner
 
@@ -17,6 +17,7 @@ class StubPipeline:
         self.started = asyncio.Event()
         self.duration: int | None = None
         self.production_prepared = False
+        self.production_mode: str | None = None
         self.settings = settings or Settings(_env_file=None, llm_provider="mock")
 
     async def run(self, topic_id: str) -> None:
@@ -25,8 +26,9 @@ class StubPipeline:
     def prepare_rewrite(self, topic_id: str, duration: int) -> None:
         self.duration = duration
 
-    def prepare_production(self, topic_id: str) -> None:
+    def prepare_production(self, topic_id: str, mode: str = "resume") -> None:
         self.production_prepared = True
+        self.production_mode = mode
 
 
 @pytest.mark.asyncio
@@ -87,6 +89,7 @@ async def test_production_route_starts_from_existing_script(
 
         response = await generate_production_package(
             topic.id,
+            ProductionRequest(mode="full"),
             session,
             runner,
             store,
@@ -95,3 +98,22 @@ async def test_production_route_starts_from_existing_script(
 
         assert response.accepted is True
         assert pipeline.production_prepared is True
+        assert pipeline.production_mode == "full"
+
+
+@pytest.mark.asyncio
+async def test_production_route_defaults_to_resume(test_settings, session_factory) -> None:
+    with session_factory() as session:
+        topic = Topic(id="topic_api_resume", title="普通人的选择", input_mode="manual")
+        session.add(topic)
+        session.commit()
+        store = ProjectStore(test_settings)
+        store.save_text(session, topic.id, "script", "# 已审校剧本")
+        session.commit()
+        pipeline = StubPipeline()
+        runner = PipelineRunner(pipeline)  # type: ignore[arg-type]
+
+        await generate_production_package(topic.id, None, session, runner, store)
+        await asyncio.wait_for(pipeline.started.wait(), timeout=1)
+
+        assert pipeline.production_mode == "resume"

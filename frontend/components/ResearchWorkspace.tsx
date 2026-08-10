@@ -10,6 +10,7 @@ import { stepLabels } from "@/lib/pipeline";
 import type {
   Event,
   Fact,
+  ProductionMode,
   ProductionPackage,
   ScriptPayload,
   Source,
@@ -276,14 +277,14 @@ export function ResearchWorkspace({ topicId }: { topicId: string }) {
     }
   }
 
-  async function generateProduction() {
+  async function generateProduction(mode: ProductionMode = "resume") {
     setBusy(true);
     setError(null);
     setActiveTab("影视生成");
     try {
       await api(`/topics/${topicId}/production-package`, {
         method: "POST",
-        body: "{}",
+        body: JSON.stringify({ mode }),
       });
       await forceRefresh();
     } catch (cause) {
@@ -814,7 +815,16 @@ function ScriptView({
 
       {payload.review?.fallback_used ? (
         <div className="mt-4 rounded-xl bg-amber-50 p-4 text-xs leading-5 text-amber-800">
-          当前是确定性保底剧本，不会被标记为成片就绪。{payload.review.generation_reason ? ` 原因：${payload.review.generation_reason}` : ""}
+          <p className="font-semibold">
+            当前是确定性保底剧本，不是模型产出，不会被标记为成片就绪。
+          </p>
+          <p className="mt-1">
+            审校分数只衡量这份保底稿本身，不能代表剧本层已经通过。生产步骤会因此跳过全部高成本调用，
+            请先重新生成剧本，再生成影视包。
+          </p>
+          {payload.review.generation_reason ? (
+            <p className="mt-1">原因：{payload.review.generation_reason}</p>
+          ) : null}
         </div>
       ) : null}
 

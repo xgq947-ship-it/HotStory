@@ -43,6 +43,41 @@ class ConcurrentShotLLMProvider(ScenarioLLMProvider):
             self.active_shot_calls -= 1
 
 
+class CountingShotLLMProvider(ScenarioLLMProvider):
+    """只数逐生成单元那种高成本调用，规划层调用不算。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.shot_prompt_calls = 0
+
+    async def generate_json(self, system_prompt: str, user_prompt: str):
+        if '"prompt_body_template"' in user_prompt:
+            self.shot_prompt_calls += 1
+        return await super().generate_json(system_prompt, user_prompt)
+
+
+async def _run_then_rebuild(
+    pipeline: Pipeline,
+    session_factory,
+    topic_id: str,
+    *,
+    reuse: bool = True,
+) -> ProductionPackageData:
+    production_llm, profile = pipeline._production_llm()
+    with session_factory() as session:
+        topic = session.get(Topic, topic_id)
+        package = await ProductionPackageBuilder(
+            production_llm,
+            pipeline.store,
+            pipeline.settings.llm_concurrency,
+            planning_llm=production_llm,
+            llm_profile=profile,
+        ).build(session, topic, topic.requested_duration, reuse=reuse)
+        pipeline.store.save_json(session, topic_id, "production_package", package)
+        session.commit()
+    return package
+
+
 def test_shot_schema_hard_rejects_more_than_ten_seconds() -> None:
     with pytest.raises(ValidationError, match="不得超过 10 秒"):
         ShotPlanDraft(
@@ -518,3 +553,162 @@ async def test_single_shot_regeneration_preserves_other_shots(
         if shot_id != "shot_03":
             assert after_by_id[shot_id].model_dump(mode="json") == original
     assert persisted["shots"][2]["revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_resume_reuses_every_passing_unit_without_calling_the_model(
+    test_settings, session_factory
+) -> None:
+    topic_id = new_id("topic")
+    with session_factory() as session:
+        session.add(Topic(id=topic_id, title="测试热点纪实", input_mode="manual"))
+        session.commit()
+
+    llm = CountingShotLLMProvider()
+    pipeline = Pipeline(
+        test_settings,
+        llm_provider=llm,
+        search_provider=FakeSearchProvider(),
+        crawler_provider=FakeCrawlerProvider(),
+        session_factory=session_factory,
+    )
+    await pipeline.run(topic_id)
+    with session_factory() as session:
+        first = ProductionPackageData.model_validate(
+            pipeline.store.load_json(session, topic_id, "production_package")
+        )
+    assert first.generation_mode == "ai_optimized"
+    assert all(shot.prompt_source == "ai_optimized" for shot in first.shots)
+    assert all(shot.prompt_fingerprint for shot in first.shots)
+    calls_after_first = llm.shot_prompt_calls
+    assert calls_after_first > 0
+
+    second = await _run_then_rebuild(pipeline, session_factory, topic_id)
+
+    assert llm.shot_prompt_calls == calls_after_first, "续跑不该再发一次逐单元调用"
+    assert second.reused_unit_count == len(second.shots)
+    assert second.plan_source == "ai_generated"
+    assert second.generation_mode == "ai_optimized"
+    # 复用正文重跑了完整后处理链，结果必须与首轮逐字一致，音频段不能拼两遍。
+    for before, after in zip(first.shots, second.shots, strict=True):
+        assert after.prompt_body_template == before.prompt_body_template
+        assert after.prompt_body_template.count("\n音频") == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_only_regenerates_the_units_that_are_missing(
+    test_settings, session_factory
+) -> None:
+    topic_id = new_id("topic")
+    with session_factory() as session:
+        session.add(Topic(id=topic_id, title="测试热点纪实", input_mode="manual"))
+        session.commit()
+
+    llm = CountingShotLLMProvider()
+    pipeline = Pipeline(
+        test_settings,
+        llm_provider=llm,
+        search_provider=FakeSearchProvider(),
+        crawler_provider=FakeCrawlerProvider(),
+        session_factory=session_factory,
+    )
+    await pipeline.run(topic_id)
+
+    # 模拟"5 批挂了 3 个单元"：把三个单元降级成模板兜底再续跑。
+    with session_factory() as session:
+        raw = pipeline.store.load_json(session, topic_id, "production_package")
+        for shot in raw["shots"][:3]:
+            shot["prompt_source"] = "template_fallback"
+        pipeline.store.save_json(session, topic_id, "production_package", raw)
+        session.commit()
+    baseline = llm.shot_prompt_calls
+
+    resumed = await _run_then_rebuild(pipeline, session_factory, topic_id)
+
+    # 3 个待生成单元按每批 4 个切分，只该发 1 批，而不是全量的 3 批。
+    assert llm.shot_prompt_calls - baseline == 1
+    assert resumed.reused_unit_count == len(resumed.shots) - 3
+    assert all(shot.prompt_source == "ai_optimized" for shot in resumed.shots)
+
+
+@pytest.mark.asyncio
+async def test_changed_script_invalidates_every_cached_unit(
+    test_settings, session_factory
+) -> None:
+    topic_id = new_id("topic")
+    with session_factory() as session:
+        session.add(Topic(id=topic_id, title="测试热点纪实", input_mode="manual"))
+        session.commit()
+
+    llm = CountingShotLLMProvider()
+    pipeline = Pipeline(
+        test_settings,
+        llm_provider=llm,
+        search_provider=FakeSearchProvider(),
+        crawler_provider=FakeCrawlerProvider(),
+        session_factory=session_factory,
+    )
+    await pipeline.run(topic_id)
+    baseline = llm.shot_prompt_calls
+
+    with session_factory() as session:
+        script = pipeline.store.load_text(session, topic_id, "script") or ""
+        pipeline.store.save_text(
+            session, topic_id, "script", script + "\n\n<!-- 剧本已改动 -->\n"
+        )
+        session.commit()
+
+    rebuilt = await _run_then_rebuild(pipeline, session_factory, topic_id)
+
+    assert rebuilt.reused_unit_count == 0
+    assert llm.shot_prompt_calls > baseline
+
+
+@pytest.mark.asyncio
+async def test_full_mode_ignores_the_cache(test_settings, session_factory) -> None:
+    topic_id = new_id("topic")
+    with session_factory() as session:
+        session.add(Topic(id=topic_id, title="测试热点纪实", input_mode="manual"))
+        session.commit()
+
+    llm = CountingShotLLMProvider()
+    pipeline = Pipeline(
+        test_settings,
+        llm_provider=llm,
+        search_provider=FakeSearchProvider(),
+        crawler_provider=FakeCrawlerProvider(),
+        session_factory=session_factory,
+    )
+    await pipeline.run(topic_id)
+    baseline = llm.shot_prompt_calls
+
+    rebuilt = await _run_then_rebuild(pipeline, session_factory, topic_id, reuse=False)
+
+    assert rebuilt.reused_unit_count == 0
+    assert llm.shot_prompt_calls > baseline
+
+
+@pytest.mark.asyncio
+async def test_regeneration_readiness_recovers_instead_of_only_growing(
+    test_settings, session_factory
+) -> None:
+    topic_id = new_id("topic")
+    with session_factory() as session:
+        session.add(Topic(id=topic_id, title="测试热点纪实", input_mode="manual"))
+        session.commit()
+
+    pipeline = Pipeline(
+        test_settings,
+        llm_provider=ScenarioLLMProvider(),
+        search_provider=FakeSearchProvider(),
+        crawler_provider=FakeCrawlerProvider(),
+        session_factory=session_factory,
+    )
+    await pipeline.run(topic_id)
+
+    first = await pipeline.regenerate_production_shot(topic_id, "shot_03", "")
+    second = await pipeline.regenerate_production_shot(topic_id, "shot_04", "")
+
+    # 以前 blockers 只增不减，逐个单元修完之后包也永远回不到就绪。
+    assert len(second.readiness.blockers) <= len(first.readiness.blockers)
+    assert second.ready_for_generation == second.readiness.passed

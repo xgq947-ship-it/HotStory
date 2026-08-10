@@ -7,11 +7,17 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import type {
   CharacterAsset,
   CinematicShot,
+  ProductionMode,
   ProductionPackage,
 } from "@/lib/types";
 
 type ReferenceChoice = { enabled: boolean; tag: string };
 type ShotEdit = { text: string; revision: number };
+
+/** 只有 AI 优化过的单元才会被续跑复用；模板兜底的必须重生成。 */
+function isAiOptimized(shot: CinematicShot) {
+  return shot.prompt_source === "ai_optimized";
+}
 
 interface ProductionWorkspaceProps {
   topicId: string;
@@ -19,7 +25,7 @@ interface ProductionWorkspaceProps {
   scriptReady: boolean;
   busy: boolean;
   isRunning: boolean;
-  onGenerate: () => Promise<void>;
+  onGenerate: (mode?: ProductionMode) => Promise<void>;
   onRegenerateShot: (
     shotId: string,
     currentPrompt: string,
@@ -201,6 +207,9 @@ export function ProductionWorkspace({
   const internalShotCount =
     payload.internal_shot_count ||
     payload.shots.reduce((total, shot) => total + Math.max(shot.internal_shots.length, 1), 0);
+  // 旧包没有 prompt_source，一律当作待生成——复用一份来源不明的提示词更糟。
+  const pendingUnits = payload.shots.filter((shot) => !isAiOptimized(shot));
+  const canResume = pendingUnits.length > 0 && pendingUnits.length < payload.shots.length;
 
   return (
     <div>
@@ -224,16 +233,32 @@ export function ProductionWorkspace({
           >
             导出 JSON
           </a>
+          {canResume ? (
+            <button
+              className="rounded-xl bg-ink px-3.5 py-2 text-xs font-semibold text-paper disabled:opacity-40"
+              disabled={busy || isRunning}
+              onClick={() => void onGenerate("resume")}
+              type="button"
+            >
+              {isRunning ? "生成中…" : `继续生成未完成的（${pendingUnits.length} 个）`}
+            </button>
+          ) : null}
           <button
-            className="rounded-xl bg-ink px-3.5 py-2 text-xs font-semibold text-paper disabled:opacity-40"
+            className={`rounded-xl px-3.5 py-2 text-xs font-semibold disabled:opacity-40 ${canResume ? "bg-paper-2 text-ink-2 hover:bg-rule" : "bg-ink text-paper"}`}
             disabled={busy || isRunning}
-            onClick={() => void onGenerate()}
+            onClick={() => void onGenerate("full")}
             type="button"
           >
-            {isRunning ? "生成中…" : "重新生成全部"}
+            {isRunning ? "生成中…" : "全部重做"}
           </button>
         </div>
       </div>
+      {canResume && !isRunning ? (
+        <p className="mt-3 text-[11px] leading-5 text-ink-3">
+          已有 {payload.shots.length - pendingUnits.length} 个生成单元通过完整控制校验，续跑不会重复调用它们；
+          改动剧本或切换生成档位会让全部单元失效，需要整包重做。
+        </p>
+      ) : null}
 
       <section className="mt-7">
         <div className="grid gap-3 md:grid-cols-3">
@@ -275,7 +300,9 @@ export function ProductionWorkspace({
               {payload.generation_mode === "fallback" ? "当前为安全模板模式" : "当前为混合优化模式"}
             </p>
             <p className="mt-1">
-              部分模型调用失败，生成单元仍可查看；修复 LLM 配置后点击“重新生成全部”即可获得完整 AI 优化版本。
+              {canResume
+                ? `部分模型调用失败，生成单元仍可查看；修复 LLM 配置后点击“继续生成未完成的”，已通过校验的 ${payload.shots.length - pendingUnits.length} 个单元不会重复生成。`
+                : "部分模型调用失败，生成单元仍可查看；修复 LLM 配置后点击“全部重做”即可获得完整 AI 优化版本。"}
             </p>
             <details className="mt-2">
               <summary className="cursor-pointer font-semibold">查看原因</summary>
@@ -489,6 +516,17 @@ export function ProductionWorkspace({
                 第 {index + 1} 次生成 · {shot.duration_seconds}s · 内部 {Math.max(shot.internal_shots.length, 1)} 镜 · v{shot.revision}
               </span>
               <span className="mt-1 block truncate text-xs font-semibold">{shot.title}</span>
+              <span
+                className={`mt-1.5 inline-flex rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                  index === activeIndex
+                    ? "bg-paper/20 text-paper"
+                    : isAiOptimized(shot)
+                      ? "bg-verified/[0.1] text-verified"
+                      : "bg-pending/[0.1] text-pending"
+                }`}
+              >
+                {isAiOptimized(shot) ? "AI 优化" : "待生成"}
+              </span>
             </button>
           ))}
         </div>
@@ -506,6 +544,11 @@ export function ProductionWorkspace({
                     一次生成 {activeShot.duration_seconds} 秒 · 内部 {Math.max(activeShot.internal_shots.length, 1)} 镜头
                   </span>
                   <span className="text-[10px] text-ink-3">版本 {activeShot.revision}</span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isAiOptimized(activeShot) ? "bg-verified/[0.08] text-verified" : "bg-pending/[0.08] text-pending"}`}
+                  >
+                    {isAiOptimized(activeShot) ? "AI 优化" : "模板兜底 · 续跑会重新生成"}
+                  </span>
                   <span className="rounded-full bg-paper-2 px-2 py-0.5 text-[10px] font-semibold text-ink-2">
                     {activeShot.sequence_id} · {activeShot.narrative_function} · 强度 {activeShot.intensity}
                   </span>
